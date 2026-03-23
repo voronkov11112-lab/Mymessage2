@@ -1961,3 +1961,48 @@ button {
   color: #ff8f8f;
   font-weight: 600;
 }
+
+
+
+/* Style updates for forwarded messages */
+
+.tm-message-card.forwarded {
+
+  background: rgba(205, 250, 200, 0.80); /* Light green tone */
+
+  padding: 14px 16px; /* Consistent padding adjustments */
+
+  border-left: 4px solid #56c567; /* Green left border to indicate forwarded */
+
+  border-radius: 12px;
+
+  font-size: 14px; /* Unified font size */
+
+  color: var(--text-soft); /* Softer text color */
+
+}
+
+
+
+.tm-message-card.forwarded:hover {
+
+  background: rgba(195, 240, 190, 0.95); /* Slightly brighter tone on hover */
+
+}
+
+
+
+.tm-message-card.forwarded .tm-quoted-reply {
+
+  margin-top: 6px;
+
+  border-left: 4px solid rgba(102, 199, 193, 0.8);
+
+  padding: 8px 10px;
+
+  background: rgba(255, 255, 255, 0.03);
+
+}
+
+
+
