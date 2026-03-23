@@ -1,0 +1,1796 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+
+type Conversation = {
+  id: string;
+  type: 'direct' | 'group' | 'channel';
+  title: string | null;
+};
+
+type MessageReply = {
+  id: string;
+  userId: string;
+  username: string;
+  text: string;
+  createdAt: string;
+};
+
+type MessageAttachment = {
+  id?: string;
+  tempId?: string;
+  kind: 'image' | 'video' | 'audio' | 'file';
+  originalName: string;
+  storedName: string;
+  mimeType: string;
+  sizeBytes: number;
+  relativeUrl: string;
+};
+
+type Message = {
+  id: string;
+  clientId?: string | null;
+  conversationId: string;
+  userId: string;
+  username: string;
+  text: string;
+  createdAt: string;
+  editedAt?: string | null;
+  isRead?: boolean;
+  status?: 'sending' | 'failed' | 'sent';
+  replyTo: MessageReply | null;
+  deletedForEveryoneAt?: string | null;
+  forwardedFromMessageId?: string | null;
+  forwardedFromUserId?: string | null;
+  forwardedFromUsername?: string | null;
+  attachments?: MessageAttachment[];
+};
+
+type TimelineItem =
+  | { type: 'day'; key: string; label: string }
+  | { type: 'unread'; key: string; count: number }
+  | {
+      type: 'message';
+      key: string;
+      message: Message;
+      groupedTop: boolean;
+      groupedBottom: boolean;
+      mine: boolean;
+    };
+
+const props = defineProps<{
+  currentUsername: string;
+  activeConversation: Conversation | null;
+  messages: Message[];
+  text: string;
+  canSendMessage: boolean;
+  sendBlockedReason: string;
+  typingText: string;
+  loadingOlder: boolean;
+  hasMoreOlder: boolean;
+  hasMoreNewer: boolean;
+  loadingNewer: boolean;
+  isJumpMode: boolean;
+  pendingNewMessagesCount: number;
+  firstUnreadMessageId: string | null;
+  replyToMessage: Message | null;
+  editingMessage: Message | null;
+  pinnedMessage: Message | null;
+  scrollRevision: number;
+  selectedMessageIds: string[];
+  isSelectionMode: boolean;
+}>();
+
+const emit = defineEmits<{
+  openInfo: [];
+  updateText: [value: string];
+  send: [];
+  loadOlder: [];
+  loadNewer: [];
+  nearBottomChange: [value: boolean];
+  reachLatest: [];
+  jumpToLatest: [];
+  replyToMessage: [message: Message];
+  clearReply: [];
+  cancelEditMessage: []; /* Adding cancel edit */
+  startEditMessage: [message: Message]; /* Adding start edit */
+  pinMessage: [message: Message];
+  jumpToMessage: [messageId: string];
+  deleteForSelf: [message: Message];
+  deleteForEveryone: [message: Message];
+  enterSelectionMode: [message: Message];
+  toggleMessageSelection: [messageId: string];
+  deleteSelectedForSelf: [];
+  deleteSelectedForEveryone: [];
+  clearSelection: [];
+  selectVisibleMessages: [];
+  copySelectedMessages: [];
+  forwardSelectedMessages: [];
+  openForwardedAuthor: [username: string];
+  openUserProfile: [username: string];
+  attachPicked: [payload: { file: File; category: 'media' | 'audio' | 'file' }];
+}>();
+
+
+const messagesEl = ref<HTMLElement | null>(null);
+const wasNearBottom = ref(true);
+const scrollLockOlder = ref(false);
+const scrollLockNewer = ref(false);
+const savedScrollHeight = ref(0);
+const savedScrollTop = ref(0);
+const savedAnchorMessageId = ref<string | null>(null);
+const savedAnchorTop = ref(0);
+const isRestoringOlder = ref(false);
+let longPressTimer: number | null = null;
+let longPressTriggered = false;
+
+const contextMenu = ref<{
+  visible: boolean;
+  x: number;
+  y: number;
+  message: Message | null;
+}>({
+  visible: false,
+  x: 0,
+  y: 0,
+  message: null,
+});
+
+const highlightedMessageId = ref<string | null>(null);
+let highlightTimer: number | null = null;
+
+const visibleKeys = ref<Set<string>>(new Set());
+let isInitialLoad = true;
+
+const fullscreenImageUrl = ref<string | null>(null);
+
+function openImageFullscreen(url: string) {
+  if (!url) return;
+  fullscreenImageUrl.value = url;
+}
+
+function closeImageFullscreen() {
+  fullscreenImageUrl.value = null;
+}
+
+function messageHasImageOnly(message: Message) {
+  const attachments = message.attachments || [];
+  if (attachments.length !== 1) return false;
+  if (attachments[0].kind !== 'image') return false;
+  return !message.text?.trim();
+}
+
+const showAttachMenu = ref(false);
+const attachMenuEl = ref<HTMLElement | null>(null);
+const attachButtonEl = ref<HTMLElement | null>(null);
+const mediaInput = ref<HTMLInputElement | null>(null);
+const audioInput = ref<HTMLInputElement | null>(null);
+const fileInput = ref<HTMLInputElement | null>(null);
+
+function toggleAttachMenu() {
+  if (!props.activeConversation || !props.canSendMessage) return;
+  showAttachMenu.value = !showAttachMenu.value;
+}
+
+function closeAttachMenu() {
+  showAttachMenu.value = false;
+}
+
+
+function pickMedia() {
+  closeAttachMenu();
+  mediaInput.value?.click();
+}
+
+function pickAudio() {
+  closeAttachMenu();
+  audioInput.value?.click();
+}
+
+function pickFile() {
+  closeAttachMenu();
+  fileInput.value?.click();
+}
+
+function resetFileInput(input: HTMLInputElement | null) {
+  if (input) input.value = '';
+}
+
+function emitPickedFile(event: Event, category: 'media' | 'audio' | 'file') {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+
+  emit('attachPicked', { file, category });
+  resetFileInput(input);
+}
+
+
+function label(conversation: Conversation | null) {
+  if (!conversation) return 'Выберите чат';
+  return conversation.title || conversation.type;
+}
+
+function initials(value: string) {
+  return value.trim().slice(0, 2).toUpperCase();
+}
+
+function avatarStyle(seed: string) {
+  const colors = [
+    ['#5dbeff', '#3478f6'],
+    ['#67d67c', '#2e9e52'],
+    ['#ffb65d', '#f07a2f'],
+    ['#ff7aa2', '#d94b78'],
+    ['#b18cff', '#7a5af8'],
+    ['#66d1c1', '#2c9f90'],
+  ];
+
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = seed.charCodeAt(i) + ((hash << 5) - hash);
+  }
+
+  const pair = colors[Math.abs(hash) % colors.length];
+  return {
+    background: `linear-gradient(135deg, ${pair[0]}, ${pair[1]})`,
+  };
+}
+
+function authorColor(seed: string) {
+  const colors = ['#64b5ff', '#59d46a', '#ffb347', '#ff7fa8', '#b78cff', '#72e6d4'];
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = seed.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return colors[Math.abs(hash) % colors.length];
+}
+
+function formatTime(value: string) {
+  return new Date(value).toLocaleTimeString('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Europe/Moscow',
+  });
+}
+
+function attachmentUrl(relativeUrl: string) {
+  if (!relativeUrl) return '';
+  if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) return relativeUrl;
+  return `http://85.198.71.121:3001${relativeUrl}`;
+}
+
+
+function sameDay(a: string, b: string) {
+  const da = new Date(a);
+  const db = new Date(b);
+  return (
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
+  );
+}
+
+function formatDayLabel(value: string) {
+  const date = new Date(value);
+  const now = new Date();
+
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const yesterday = today - 24 * 60 * 60 * 1000;
+  const current = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+
+  if (current === today) return 'Сегодня';
+  if (current === yesterday) return 'Вчера';
+
+  return date.toLocaleDateString([], {
+    day: 'numeric',
+    month: 'long',
+  });
+}
+
+function isNearBottom() {
+  const el = messagesEl.value;
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+}
+
+function findTopVisibleMessageElement() {
+  const container = messagesEl.value;
+  if (!container) return null;
+
+  const elements = Array.from(
+    container.querySelectorAll<HTMLElement>('[data-message-id]')
+  );
+
+  const containerTop = container.getBoundingClientRect().top;
+
+  for (const el of elements) {
+    const rect = el.getBoundingClientRect();
+    if (rect.bottom > containerTop + 4) {
+      return el;
+    }
+  }
+
+  return elements[0] || null;
+}
+
+function notifyBottomState() {
+  const near = isNearBottom();
+  const wasNear = wasNearBottom.value;
+  wasNearBottom.value = near;
+  emit('nearBottomChange', near);
+
+  // Only emit 'reachLatest' on the transition from not-near → near so that
+  // markConversationRead / loadConversations are not called on every scroll
+  // event while the user is already at the bottom.
+  if (near && !wasNear) emit('reachLatest');
+}
+
+function scrollToBottom() {
+  const el = messagesEl.value;
+  if (!el) return;
+  el.scrollTop = el.scrollHeight;
+  notifyBottomState();
+}
+
+function scrollToBottomSmooth() {
+  const el = messagesEl.value;
+  if (!el) return;
+
+  el.scrollTo({
+    top: el.scrollHeight,
+    behavior: 'smooth',
+  });
+
+  requestAnimationFrame(() => {
+    notifyBottomState();
+  });
+}
+
+function maybeAutoloadOlder() {
+  const el = messagesEl.value;
+  if (!el) return;
+  if (props.isJumpMode) return;
+  if (!props.hasMoreOlder) return;
+  if (props.loadingOlder) return;
+  if (scrollLockOlder.value) return;
+  if (props.messages.length === 0) return;
+
+  const needsFill =
+    el.scrollHeight <= el.clientHeight + 80 ||
+    el.scrollTop < 120;
+
+  if (!needsFill) return;
+
+  console.log('[ChatView] maybeAutoloadOlder trigger', {
+    scrollTop: el.scrollTop,
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+    hasMoreOlder: props.hasMoreOlder,
+    loadingOlder: props.loadingOlder,
+    scrollLockOlder: scrollLockOlder.value,
+    messagesLength: props.messages.length,
+    firstMessageId: props.messages[0]?.id || null,
+    firstMessageCreatedAt: props.messages[0]?.createdAt || null,
+  });
+
+  scrollLockOlder.value = true;
+  emit('loadOlder');
+}
+
+function onScroll() {
+  const el = messagesEl.value;
+  if (!el) return;
+
+  notifyBottomState();
+
+  // Load older messages (scroll up).
+  // Guard props.messages.length > 0: if the list is empty the lock would get
+  // stuck because loadOlderMessages returns early without ever setting
+  // loadingOlder = true, so the watcher that resets the lock never fires.
+  // Note: savedScrollHeight/savedScrollTop are captured in the loadingOlder
+  // watcher (when loading becomes true) so that the snapshot reflects the DOM
+  // state AFTER the loading indicator has been rendered, giving a more accurate
+  // scroll-position restoration and avoiding scroll jerk.
+  if (el.scrollTop < 120 && props.hasMoreOlder && !props.loadingOlder && !scrollLockOlder.value && props.messages.length > 0) {
+    console.log('[ChatView] loadOlder trigger', {
+      scrollTop: el.scrollTop,
+      hasMoreOlder: props.hasMoreOlder,
+      loadingOlder: props.loadingOlder,
+      scrollLockOlder: scrollLockOlder.value,
+      messagesLength: props.messages.length,
+      firstMessageId: props.messages[0]?.id || null,
+      firstMessageCreatedAt: props.messages[0]?.createdAt || null,
+    });
+    scrollLockOlder.value = true;
+    emit('loadOlder');
+  }
+
+  // Load newer messages (scroll down) — only in jump mode
+  if (
+    props.isJumpMode &&
+    props.hasMoreNewer &&
+    !props.loadingNewer &&
+    !scrollLockNewer.value &&
+    el.scrollHeight - el.scrollTop - el.clientHeight < 150
+  ) {
+    scrollLockNewer.value = true;
+    emit('loadNewer');
+  }
+}
+
+async function handleJumpToLatest() {
+  await nextTick();
+  scrollToBottom();
+  emit('jumpToLatest');
+}
+
+function previewText(value: string) {
+  return value.length > 90 ? `${value.slice(0, 90)}…` : value;
+}
+
+function getDeliveryState(message: Message) {
+  if (message.status === 'failed') {
+    return {
+      text: 'Не отправлено',
+      className: 'is-failed',
+    };
+  }
+
+  if (message.status === 'sending') {
+    return {
+      text: 'Отправляется…',
+      className: 'is-sending',
+    };
+  }
+
+  if (message.isRead) {
+    return {
+      text: '✓✓',
+      className: 'is-read',
+    };
+  }
+
+  return {
+    text: '✓',
+    className: '',
+  };
+}
+
+function hideContextMenu() {
+  contextMenu.value.visible = false;
+  contextMenu.value.message = null;
+}
+
+function openContextMenu(event: MouseEvent, message: Message) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  const menuW = 220, menuH = 160;
+  const x = Math.min(event.clientX, window.innerWidth - menuW - 8);
+  const y = Math.min(event.clientY, window.innerHeight - menuH - 8);
+  console.log('[ContextMenu] open', { x, y, messageId: message.id });
+  contextMenu.value = { visible: true, x, y, message };
+}
+
+function handleReply(message: Message) {
+  emit('replyToMessage', message);
+  hideContextMenu();
+}
+
+function handlePin(message: Message) {
+  emit('pinMessage', message);
+  hideContextMenu();
+}
+
+
+function canEditMessage(message: Message) {
+  if (!props.currentUsername) return false;
+  if (message.deletedForEveryoneAt) return false;
+  if (message.username !== props.currentUsername) return false;
+
+  const createdAtMs = new Date(message.createdAt).getTime();
+  const diffMs = Date.now() - createdAtMs;
+  return diffMs <= 15 * 60 * 1000;
+}
+
+function handleStartEditMessage(message: Message) {
+  contextMenu.value.visible = false;
+  contextMenu.value.message = null;
+  if (!canEditMessage(message)) return;
+  emit('startEditMessage', message);
+}
+
+function canDeleteForEveryone(message: Message) {
+  return message.username === props.currentUsername && !message.deletedForEveryoneAt;
+}
+
+function canDeleteForSelf(message: Message) {
+  return !message.deletedForEveryoneAt;
+}
+
+function handleDeleteForSelf(message: Message) {
+  emit('deleteForSelf', message);
+  hideContextMenu();
+}
+
+function handleDeleteForEveryone(message: Message) {
+  emit('deleteForEveryone', message);
+  hideContextMenu();
+}
+
+function handleEnterSelectionMode(message: Message) {
+  emit('enterSelectionMode', message);
+  hideContextMenu();
+}
+
+function isSelected(messageId: string) {
+  return props.selectedMessageIds.includes(messageId);
+}
+
+function canDeleteSelectedForEveryone() {
+  if (props.selectedMessageIds.length === 0) return false;
+
+  return props.selectedMessageIds.every((id) => {
+    const message = props.messages.find((m) => m.id === id);
+    return !!message && message.username === props.currentUsername && !message.deletedForEveryoneAt;
+  });
+}
+
+function handleMessageClick(message: Message) {
+  if (longPressTriggered) {
+    longPressTriggered = false;
+    return;
+  }
+
+  if (!props.isSelectionMode) return;
+  emit('toggleMessageSelection', message.id);
+}
+
+function startLongPress(message: Message) {
+  cancelLongPress();
+  longPressTriggered = false;
+
+  longPressTimer = window.setTimeout(() => {
+    longPressTriggered = true;
+    emit('enterSelectionMode', message);
+  }, 500);
+}
+
+function cancelLongPress() {
+  if (longPressTimer) {
+    window.clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+}
+
+function flashMessage(messageId: string) {
+  highlightedMessageId.value = messageId;
+
+  if (highlightTimer) {
+    window.clearTimeout(highlightTimer);
+  }
+
+  highlightTimer = window.setTimeout(() => {
+    highlightedMessageId.value = null;
+    highlightTimer = null;
+  }, 1800);
+}
+
+function jumpToMessageInsideList(messageId: string) {
+  const el = document.querySelector(`[data-message-id="${messageId}"]`) as HTMLElement | null;
+  if (!el) return;
+
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  flashMessage(messageId);
+}
+
+
+
+function handleOpenUserProfile(event: MouseEvent, username: string) {
+  event.stopPropagation();
+  console.log('[ChatView] open user profile click', username);
+  emit('openUserProfile', username);
+}
+
+function handleJumpToMessage(messageId: string) {
+  emit('jumpToMessage', messageId);
+
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      jumpToMessageInsideList(messageId);
+    }, 120);
+  });
+
+  hideContextMenu();
+}
+
+function handleGlobalClick(event: MouseEvent) {
+  const target = event.target as HTMLElement | null;
+
+  if (!target?.closest('.tm-context-menu')) {
+    hideContextMenu();
+  }
+
+  if (!showAttachMenu.value) return;
+  if (!target) return;
+
+  const node = target as Node;
+
+  if (attachMenuEl.value?.contains(node)) return;
+  if (attachButtonEl.value?.contains(node)) return;
+
+  closeAttachMenu();
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  const metaOrCtrl = event.metaKey || event.ctrlKey;
+
+  if (props.isSelectionMode && event.key === 'Escape') {
+    emit('clearSelection');
+    hideContextMenu();
+    return;
+  }
+
+  if (!props.isSelectionMode && event.key === 'Escape') {
+    hideContextMenu();
+    return;
+  }
+
+  if (!props.isSelectionMode) return;
+
+  if (metaOrCtrl && event.key.toLowerCase() === 'a') {
+    event.preventDefault();
+    emit('selectVisibleMessages');
+    return;
+  }
+
+  if (metaOrCtrl && event.key.toLowerCase() === 'c') {
+    event.preventDefault();
+    emit('copySelectedMessages');
+    return;
+  }
+
+  if (event.altKey && event.key.toLowerCase() === 'f') {
+    event.preventDefault();
+    emit('forwardSelectedMessages');
+    return;
+  }
+
+  if (event.key === 'Delete') {
+    event.preventDefault();
+    if (event.shiftKey && canDeleteSelectedForEveryone()) {
+      emit('deleteSelectedForEveryone');
+    } else {
+      emit('deleteSelectedForSelf');
+    }
+  }
+}
+
+// Locate the unread separator by message ID rather than by index arithmetic.
+// An arithmetic approach (messages.length - pendingNewMessagesCount) drifts
+// whenever messages are prepended (load-older) or appended (load-newer in jump
+// mode) because those operations change messages.length while pendingNewMessagesCount
+// stays constant.  An ID-based lookup is stable across all pagination operations.
+const firstUnreadIndex = computed(() => {
+  if (!props.firstUnreadMessageId) return -1;
+  if (props.pendingNewMessagesCount <= 0) return -1;
+  return props.messages.findIndex((m) => m.id === props.firstUnreadMessageId);
+});
+
+const showJumpToLatestButton = computed(() => {
+  return !props.isSelectionMode && !wasNearBottom.value && props.pendingNewMessagesCount > 0;
+});
+
+const timeline = computed<TimelineItem[]>(() => {
+  const items: TimelineItem[] = [];
+
+  for (let i = 0; i < props.messages.length; i += 1) {
+    const msg = props.messages[i];
+    const prev = props.messages[i - 1];
+    const next = props.messages[i + 1];
+    const mine = msg.username === props.currentUsername;
+
+    if (!prev || !sameDay(prev.createdAt, msg.createdAt)) {
+      items.push({
+        type: 'day',
+        key: `day-${msg.id}`,
+        label: formatDayLabel(msg.createdAt),
+      });
+    }
+
+    if (firstUnreadIndex.value >= 0 && i === firstUnreadIndex.value) {
+      items.push({
+        type: 'unread',
+        key: `unread-${msg.id}`,
+        count: props.pendingNewMessagesCount,
+      });
+    }
+
+    const groupedTop =
+      !!prev &&
+      prev.username === msg.username &&
+      sameDay(prev.createdAt, msg.createdAt) &&
+      Math.abs(new Date(msg.createdAt).getTime() - new Date(prev.createdAt).getTime()) < 5 * 60 * 1000;
+
+    const groupedBottom =
+      !!next &&
+      next.username === msg.username &&
+      sameDay(next.createdAt, msg.createdAt) &&
+      Math.abs(new Date(next.createdAt).getTime() - new Date(msg.createdAt).getTime()) < 5 * 60 * 1000;
+
+    items.push({
+      type: 'message',
+      key: msg.id,
+      message: msg,
+      mine,
+      groupedTop,
+      groupedBottom,
+    });
+  }
+
+  return items;
+});
+
+watch(
+  () => props.activeConversation?.id,
+  async () => {
+    visibleKeys.value = new Set();
+    isInitialLoad = true;
+    // Always clear scroll-lock state on conversation switch so a lock that was
+    // set in the previous session (e.g. via a scroll event on an empty list)
+    // cannot bleed into the newly opened conversation.
+    scrollLockOlder.value = false;
+    scrollLockNewer.value = false;
+    savedScrollHeight.value = 0;
+    savedScrollTop.value = 0;
+    // Reset wasNearBottom to true so that the initial scrollToBottom() below
+    // does not trigger a spurious 'reachLatest' emission via the not-near→near
+    // transition check in notifyBottomState.  Read marking for the newly opened
+    // conversation is handled explicitly by openConversation in App.vue.
+    wasNearBottom.value = true;
+    hideContextMenu();
+    await nextTick();
+    scrollToBottom();
+    await nextTick();
+    maybeAutoloadOlder();
+  }
+);
+
+watch(
+  () => props.messages.length,
+  async (_newLen, _oldLen) => {
+    await nextTick();
+    // In jump mode, don't auto-scroll
+    if (props.isJumpMode) return;
+    // Don't interfere with scroll restoration when loading older messages
+    if (scrollLockOlder.value) return;
+    if (wasNearBottom.value) {
+      scrollToBottom();
+    } else {
+      notifyBottomState();
+    }
+    await nextTick();
+    maybeAutoloadOlder();
+  }
+);
+
+watch(
+  () => props.pendingNewMessagesCount,
+  async (value, prev) => {
+    // When the pending count resets to zero (e.g. user scrolled to bottom or
+    // sent a message), scroll to the bottom so the latest messages are visible.
+    // Skip this in jump mode: the user is intentionally viewing a historical
+    // segment and jump-to-latest is handled by its own explicit path.
+    if (value === 0 && prev > 0 && !props.isJumpMode) {
+      await nextTick();
+      scrollToBottom();
+    }
+  }
+);
+
+// Scroll to the bottom whenever the sender's own message arrives (scrollRevision
+// is incremented in App.vue inside the message:new handler for isMine messages).
+// This ensures the sender lands on their newly sent message regardless of whether
+// wasNearBottom was true or false at the time of sending.
+watch(
+  () => props.scrollRevision,
+  async (value) => {
+    // Guard: value is 0 on initial mount — only act when the revision is actually bumped.
+    if (!value) return;
+    if (props.isJumpMode) return;
+    await nextTick();
+    requestAnimationFrame(() => {
+      scrollToBottomSmooth();
+    });
+  }
+);
+
+watch(
+  () => timeline.value,
+  async (items) => {
+    const newKeys = items.map((i) => i.key).filter((k) => !visibleKeys.value.has(k));
+    if (newKeys.length === 0) return;
+
+    if (isInitialLoad || newKeys.length > 1) {
+      // Initial chat load, chat switch, or bulk pagination update:
+      // show everything immediately with no animation delay.
+      isInitialLoad = false;
+      const updated = new Set(visibleKeys.value);
+      newKeys.forEach((k) => updated.add(k));
+      visibleKeys.value = updated;
+    } else {
+      // Single new message (realtime socket event): reveal on next frame for a smooth fade-in.
+      await nextTick();
+      requestAnimationFrame(() => {
+        const updated = new Set(visibleKeys.value);
+        newKeys.forEach((k) => updated.add(k));
+        visibleKeys.value = updated;
+      });
+    }
+  },
+  { immediate: true }
+);
+
+// Manage scroll-position preservation around older-message prepend.
+//
+// When loadingOlder transitions false → true we snapshot the scroll state
+// AFTER the loading indicator has been rendered into the DOM (via nextTick).
+// This gives a more accurate baseline than capturing in the scroll handler
+// (where the loading indicator has not yet appeared) and eliminates the
+// small height discrepancy that was causing visible scroll jerk.
+//
+// When loadingOlder transitions true → false we restore the scroll position
+// using the snapshot, then release the scroll lock.
+watch(
+  () => props.loadingOlder,
+  async (loading, wasLoading) => {
+    const el = messagesEl.value;
+    if (!el) return;
+
+    if (loading && !wasLoading) {
+      await nextTick();
+
+      const container = messagesEl.value;
+      if (!container) return;
+
+      savedScrollHeight.value = container.scrollHeight;
+      savedScrollTop.value = container.scrollTop;
+
+      const anchorEl = findTopVisibleMessageElement();
+      savedAnchorMessageId.value = anchorEl?.dataset.messageId || null;
+      savedAnchorTop.value = anchorEl?.getBoundingClientRect().top || 0;
+      return;
+    }
+
+    if (!loading && wasLoading) {
+      await nextTick();
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+      try {
+        const container = messagesEl.value;
+        if (!container) {
+          scrollLockOlder.value = false;
+          return;
+        }
+
+        isRestoringOlder.value = true;
+
+        const previousBehavior = container.style.scrollBehavior;
+        container.style.scrollBehavior = 'auto';
+
+        const fallbackDiff = container.scrollHeight - savedScrollHeight.value;
+        const fallbackScrollTop = savedScrollTop.value + fallbackDiff;
+
+        let restoredByAnchor = false;
+
+        if (savedAnchorMessageId.value) {
+          const anchorEl = container.querySelector<HTMLElement>(
+            `[data-message-id="${savedAnchorMessageId.value}"]`
+          );
+
+          if (anchorEl) {
+            const nextTop = anchorEl.getBoundingClientRect().top;
+            const delta = nextTop - savedAnchorTop.value;
+            const candidateScrollTop = container.scrollTop + delta;
+
+            container.scrollTop = candidateScrollTop;
+            restoredByAnchor = true;
+
+            const correctedTop = anchorEl.getBoundingClientRect().top;
+            const residual = Math.abs(correctedTop - savedAnchorTop.value);
+
+            if (
+              Number.isNaN(candidateScrollTop) ||
+              candidateScrollTop < 0 ||
+              residual > 24
+            ) {
+              console.warn('[ChatView] older restore fallback', {
+                candidateScrollTop,
+                residual,
+                fallbackScrollTop,
+                anchorMessageId: savedAnchorMessageId.value,
+              });
+              container.scrollTop = fallbackScrollTop;
+              restoredByAnchor = false;
+            }
+          }
+        }
+
+        if (!restoredByAnchor) {
+          container.scrollTop = fallbackScrollTop;
+        }
+
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        container.style.scrollBehavior = previousBehavior;
+      } finally {
+        savedAnchorMessageId.value = null;
+        savedAnchorTop.value = 0;
+        requestAnimationFrame(() => {
+          isRestoringOlder.value = false;
+          scrollLockOlder.value = false;
+        });
+      }
+    } else if (!loading) {
+      if (!props.hasMoreOlder) {
+        scrollLockOlder.value = false;
+      }
+    }
+  }
+);
+
+
+// Release newer-message scroll lock once the fetch completes.
+watch(
+  () => props.loadingNewer,
+  (loading, wasLoading) => {
+    if (!loading && wasLoading) {
+      scrollLockNewer.value = false;
+    }
+  }
+);
+
+function handleGlobalContextMenu(event: MouseEvent) {
+  const target = event.target as HTMLElement | null;
+  if (props.isSelectionMode) {
+    event.preventDefault();
+    hideContextMenu();
+    return;
+  }
+
+  if (!target?.closest('.tm-message-shell')) {
+    hideContextMenu();
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleGlobalClick);
+  document.addEventListener('keydown', handleKeydown);
+  document.addEventListener('contextmenu', handleGlobalContextMenu);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', handleGlobalClick);
+  document.removeEventListener('keydown', handleKeydown);
+  document.removeEventListener('contextmenu', handleGlobalContextMenu);
+  cancelLongPress();
+  if (highlightTimer) window.clearTimeout(highlightTimer);
+});
+</script>
+
+<template>
+  <main class="tm-chat tm-chat-telegramish">
+    <div class="tm-header tm-chat-header">
+      <div class="tm-chat-header__left">
+        <button class="tm-chat-header__title" @click="emit('openInfo')">
+          <div class="tm-avatar">
+            {{ initials(label(activeConversation)) }}
+          </div>
+
+          <div>
+            <div class="tm-chat-header__name">{{ label(activeConversation) }}</div>
+            <div class="tm-muted tm-chat-header__meta">
+              {{ typingText || activeConversation?.type || 'Telegram-like chat' }}
+            </div>
+          </div>
+        </button>
+      </div>
+
+      <div class="tm-chat-header__actions">
+        <button class="tm-icon-btn">🔍</button>
+        <button class="tm-icon-btn" @click="emit('openInfo')">⋮</button>
+      </div>
+    </div>
+
+    <button
+      v-if="activeConversation && pinnedMessage"
+      class="tm-pinned-strip"
+      @click="handleJumpToMessage(pinnedMessage.id)"
+      title="Перейти к закреплённому сообщению"
+    >
+      <div class="tm-pinned-strip__title">Закреплённое сообщение</div>
+      <div class="tm-pinned-strip__text">
+        <span class="tm-pinned-strip__author">{{ pinnedMessage.username }}</span>
+        <span>{{ previewText(pinnedMessage.text) }}</span>
+      </div>
+    </button>
+
+    <div v-else-if="activeConversation" class="tm-pinned-strip tm-pinned-strip--placeholder">
+      <div class="tm-pinned-strip__title">Закреплённое сообщение</div>
+      <div class="tm-pinned-strip__text">Здесь будет pinned message block, как в Telegram.</div>
+    </div>
+
+    <div class="tm-messages-wrap">
+      <div
+        ref="messagesEl"
+        :class="['tm-messages', 'tm-messages-telegramish', isRestoringOlder ? 'is-restoring-older' : '']"
+        @scroll.passive="onScroll"
+      >
+        <div v-if="loadingOlder" class="tm-muted" style="text-align: center; margin-bottom: 12px;">
+          Загрузка старых сообщений...
+        </div>
+
+        <div
+          v-else-if="hasMoreOlder"
+          class="tm-muted"
+          style="text-align: center; margin-bottom: 12px;"
+        >
+          Прокрути вверх для загрузки старых сообщений
+        </div>
+
+        <div
+          v-else-if="messages.length > 0"
+          class="tm-muted"
+          style="text-align: center; margin-bottom: 12px; font-size: 12px; color: #6a8399;"
+        >
+          Начало переписки
+        </div>
+
+        <div v-if="!activeConversation" class="tm-empty-chat-state">
+          <div class="tm-empty-chat-card">
+            <div class="tm-avatar large">M</div>
+            <div class="tm-panel-title" style="margin-top: 14px;">MyMessage</div>
+            <div class="tm-muted" style="margin-top: 8px;">
+              Выбери чат слева или создай новый через меню.
+            </div>
+          </div>
+        </div>
+
+        <template v-for="item in timeline" :key="item.key">
+          <div v-if="item.type === 'day'" :class="['tm-day-separator', visibleKeys.has(item.key) ? 'is-visible' : '']">
+            <span>{{ item.label }}</span>
+          </div>
+
+          <div v-else-if="item.type === 'unread'" :class="['tm-unread-separator', visibleKeys.has(item.key) ? 'is-visible' : '']">
+            <div class="tm-unread-separator__line"></div>
+            <div class="tm-unread-separator__badge">
+              {{ item.count }} новых {{ item.count === 1 ? 'сообщение' : item.count < 5 ? 'сообщения' : 'сообщений' }}
+            </div>
+            <div class="tm-unread-separator__line"></div>
+          </div>
+
+          <div
+            v-else
+            :data-message-id="item.message.id"
+            :class="[
+              'tm-message-shell',
+              item.mine ? 'mine' : 'other',
+              item.groupedTop ? 'grouped-top' : '',
+              item.groupedBottom ? 'grouped-bottom' : '',
+              highlightedMessageId === item.message.id ? 'is-highlighted' : '',
+              visibleKeys.has(item.key) ? 'is-visible' : '',
+              props.isSelectionMode && isSelected(item.message.id) ? 'is-selected' : '',
+              props.isSelectionMode ? 'is-selection-mode' : '',
+            ]"
+            @contextmenu.prevent.stop="!props.isSelectionMode && openContextMenu($event, item.message)"
+            @click="handleMessageClick(item.message)"
+            @touchstart.passive="startLongPress(item.message)"
+            @touchend="cancelLongPress"
+            @touchcancel="cancelLongPress"
+            @touchmove="cancelLongPress"
+          >
+            <div
+              v-if="props.isSelectionMode"
+              class="tm-message-checkbox"
+              :class="{ 'is-selected': isSelected(item.message.id) }"
+            >
+              <span v-if="isSelected(item.message.id)">✓</span>
+            </div>
+
+            <div
+              v-if="!item.mine"
+              class="tm-message-avatar"
+              :class="item.groupedTop ? 'is-hidden' : ''"
+              :style="avatarStyle(item.message.username)"
+            >
+              {{ initials(item.message.username) }}
+            </div>
+
+            <div
+              :class="[
+                'tm-message-card',
+                item.mine ? 'mine' : 'other',
+                item.groupedTop ? 'grouped-top' : '',
+                item.groupedBottom ? 'grouped-bottom' : '',
+                messageHasImageOnly(item.message) ? 'tm-message-card--image-only' : '',
+              ]"
+            >
+              <button
+                v-if="!item.groupedTop"
+                type="button"
+                class="tm-message-author tm-message-author-btn"
+                :style="{ color: authorColor(item.message.username) }"
+                @click.stop="handleOpenUserProfile($event, item.message.username)"
+              >
+                {{ item.message.username }}
+              </button>
+
+              <div
+                v-if="item.message.replyTo"
+                class="tm-quoted-reply tm-quoted-reply--telegramish"
+                @click.stop="handleJumpToMessage(item.message.replyTo.id)"
+                title="Перейти к сообщению, на которое отвечают"
+              >
+                <div class="tm-quoted-reply__bar"></div>
+                <div class="tm-quoted-reply__content">
+                  <div class="tm-quoted-reply__author">
+                    {{ item.message.replyTo.username }}
+                  </div>
+                  <div class="tm-quoted-reply__text">
+                    {{ previewText(item.message.replyTo.text) }}
+                  </div>
+                </div>
+              </div>
+
+              <div
+                v-if="item.message.forwardedFromUsername"
+                :class="[
+                  'tm-message-forwarded-wrap',
+                  item.mine ? 'is-mine' : 'is-other',
+                ]"
+              >
+                <div class="tm-message-forwarded">
+                  <span class="tm-message-forwarded__label">Переслано от&nbsp;</span>
+                  <button
+                    type="button"
+                    class="tm-message-forwarded__author"
+                    :style="{ color: authorColor(item.message.forwardedFromUsername) }"
+                    title="Автор исходного сообщения"
+                    @click.stop="handleOpenUserProfile($event, item.message.forwardedFromUsername)"
+                  >
+                    {{ item.message.forwardedFromUsername }}
+                  </button>
+                </div>
+
+                <div class="tm-message-forwarded-quote">
+                  <div class="tm-message-forwarded-quote__bar"></div>
+                  <div class="tm-message-forwarded-quote__text">
+                    {{ previewText(item.message.text) }}
+                  </div>
+                </div>
+              </div>
+
+              <div
+                v-else
+                class="tm-message-text"
+                :class="{ 'tm-message-text--deleted': !!item.message.deletedForEveryoneAt }"
+              >
+                {{ item.message.text }}
+                  <div
+                    v-if="item.message.attachments && item.message.attachments.length"
+                    class="tm-attachments"
+                  >
+                    <template v-for="attachment in item.message.attachments" :key="attachment.id || attachment.tempId || attachment.relativeUrl">
+                      <img
+                        v-if="attachment.kind === 'image'"
+                        class="tm-attachment-image"
+                        :src="attachmentUrl(attachment.relativeUrl)"
+                        :alt="attachment.originalName"
+                      />
+
+                      <video
+                        v-else-if="attachment.kind === 'video'"
+                        class="tm-attachment-video"
+                        controls
+                        preload="metadata"
+                      >
+                        <source :src="attachmentUrl(attachment.relativeUrl)" :type="attachment.mimeType" />
+                      </video>
+
+                      <audio
+                        v-else-if="attachment.kind === 'audio'"
+                        class="tm-attachment-audio"
+                        controls
+                        preload="metadata"
+                      >
+                        <source :src="attachmentUrl(attachment.relativeUrl)" :type="attachment.mimeType" />
+                      </audio>
+
+                      <a
+                        v-else
+                        class="tm-attachment-file"
+                        :href="attachmentUrl(attachment.relativeUrl)"
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <span class="tm-attachment-file__name">{{ attachment.originalName }}</span>
+                        <span class="tm-attachment-file__meta">{{ attachment.mimeType || 'file' }}</span>
+                      </a>
+                    </template>
+                  </div>
+
+              </div>
+
+              <div class="tm-message-meta">
+                <template v-if="item.message.replyTo">
+                  <span class="tm-reply-inline-icon" title="Ответ">↩</span>
+                </template>
+                <span>{{ formatTime(item.message.createdAt) }}</span>
+                <span v-if="item.message.editedAt" class="tm-message-edited-mark">ред.</span>
+                <template v-if="item.mine">
+                  <span
+                    class="tm-read-mark"
+                    :class="getDeliveryState(item.message).className"
+                  >
+                    {{ getDeliveryState(item.message).text }}
+                  </span>
+                </template>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <div v-if="loadingNewer" class="tm-muted" style="text-align: center; margin-top: 12px;">
+          Загрузка новых сообщений...
+        </div>
+      </div>
+      <button
+        v-if="showJumpToLatestButton"
+        class="tm-jump-to-latest"
+        type="button"
+        @click="handleJumpToLatest"
+      >
+        <span class="tm-jump-to-latest__icon">↓</span>
+        <span class="tm-jump-to-latest__text">
+          {{ props.pendingNewMessagesCount }} новых
+        </span>
+      </button>
+
+    </div>
+
+    <div class="tm-composer tm-composer-telegramish">
+      <div
+        v-if="(pendingNewMessagesCount > 0 || isJumpMode) && activeConversation"
+        class="tm-new-messages-floating"
+      >
+        <button class="tm-new-messages-btn" @click="handleJumpToLatest">
+          <span v-if="pendingNewMessagesCount > 0">
+            ↓ {{ pendingNewMessagesCount }} нов{{ pendingNewMessagesCount === 1 ? 'ое сообщение' : pendingNewMessagesCount < 5 ? 'ых сообщения' : 'ых сообщений' }}
+          </span>
+          <span v-else>
+            ↓ К последним сообщениям
+          </span>
+        </button>
+      </div>
+
+      <div v-if="replyToMessage" class="tm-reply-preview">
+        <div class="tm-reply-preview__bar"></div>
+        <div class="tm-reply-preview__content">
+          <div class="tm-reply-preview__title">Ответ на {{ replyToMessage.username }}</div>
+          <div class="tm-reply-preview__text">{{ previewText(replyToMessage.text) }}</div>
+        </div>
+        <button class="tm-reply-preview__close" @click="emit('clearReply')">✕</button>
+      </div>
+
+      <div v-if="editingMessage" class="tm-reply-preview tm-edit-preview">
+        <div class="tm-reply-preview__bar"></div>
+        <div class="tm-reply-preview__content">
+          <div class="tm-reply-preview__title">Редактирование сообщения</div>
+          <div class="tm-reply-preview__text">{{ previewText(editingMessage.text) }}</div>
+        </div>
+        <button class="tm-reply-preview__close" @click="emit('cancelEditMessage')">✕</button>
+      </div>
+
+      <div
+        v-if="sendBlockedReason"
+        style="
+          margin-top: 2px;
+          color: #ffd7dc;
+          font-size: 14px;
+          padding: 14px 16px;
+          background: rgba(70, 34, 42, 0.58);
+          border: 1px solid rgba(255, 107, 129, 0.24);
+          border-radius: 14px;
+          text-align: center;
+        "
+      >
+        {{ sendBlockedReason }}
+      </div>
+
+      <template v-else>
+        <div
+          v-if="activeConversation?.type === 'channel' && !canSendMessage"
+          style="
+            margin-bottom: 10px;
+            color: #ffb7c5;
+            font-size: 13px;
+            padding: 10px 12px;
+            background: rgba(58,31,38,.55);
+            border: 1px solid rgba(255,107,129,.18);
+            border-radius: 12px;
+          "
+        >
+          У тебя только режим чтения: писать в канал могут только owner/admin.
+        </div>
+
+        <div class="tm-composer-row tm-composer-row--telegramish">
+          <div class="tm-attach-wrap">
+            <button
+              ref="attachButtonEl"
+              class="tm-icon-btn"
+              type="button"
+              :disabled="!activeConversation || !canSendMessage"
+              @click.stop="toggleAttachMenu"
+            >
+              📎
+            </button>
+
+            <div
+              v-if="showAttachMenu"
+              ref="attachMenuEl"
+              class="tm-attach-menu"
+              @click.stop
+            >
+              <button type="button" class="tm-attach-menu__item" @click="pickMedia">Фото/видео</button>
+              <button type="button" class="tm-attach-menu__item" @click="pickAudio">Аудио</button>
+              <button type="button" class="tm-attach-menu__item" @click="pickFile">Файл</button>
+            </div>
+
+            <input
+              ref="mediaInput"
+              type="file"
+              accept="image/*,video/*"
+              style="display:none"
+              @change="(event) => emitPickedFile(event, 'media')"
+            />
+
+            <input
+              ref="audioInput"
+              type="file"
+              accept="audio/*"
+              style="display:none"
+              @change="(event) => emitPickedFile(event, 'audio')"
+            />
+
+            <input
+              ref="fileInput"
+              type="file"
+              style="display:none"
+              @change="(event) => emitPickedFile(event, 'file')"
+            />
+          </div>
+          <input
+            class="tm-input"
+            :value="text"
+            @input="emit('updateText', ($event.target as HTMLInputElement).value)"
+            @keyup.enter="emit('send')"
+            :placeholder="activeConversation?.type === 'channel' && !canSendMessage ? 'Только чтение' : 'Написать сообщение...'"
+            :disabled="!activeConversation || !canSendMessage"
+          />
+          <button
+            class="tm-primary"
+            @click="console.log('[ChatView] send click', { activeConversation: !!activeConversation, canSendMessage, textLength: text.length }); emit('send')"
+            :disabled="!activeConversation || !canSendMessage"
+          >
+            {{ editingMessage ? 'Сохранить' : '➤' }}
+          </button>
+        </div>
+      </template>
+    </div>
+
+    <div
+      v-if="fullscreenImageUrl"
+      class="tm-image-lightbox"
+      @click="closeImageFullscreen"
+    >
+      <img
+        class="tm-image-lightbox__image"
+        :src="fullscreenImageUrl"
+        alt="preview"
+        @click.stop
+      />
+      <button
+        type="button"
+        class="tm-image-lightbox__close"
+        @click.stop="closeImageFullscreen"
+      >
+        ✕
+      </button>
+    </div>
+
+    <div
+      v-if="contextMenu.visible && contextMenu.message"
+      class="tm-context-menu"
+      :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+      @click.stop
+      @contextmenu.stop
+    >
+      <button
+        v-if="!contextMenu.message.deletedForEveryoneAt"
+        class="tm-context-menu__item"
+        @click="handleReply(contextMenu.message)"
+      >
+        <span class="tm-context-menu__icon">↩</span>
+        <span class="tm-context-menu__text">Ответить</span>
+      </button>
+      <button
+        v-if="canEditMessage(contextMenu.message)"
+        class="tm-context-menu__item"
+        @click="handleStartEditMessage(contextMenu.message)"
+      >
+        <span class="tm-context-menu__icon">✏️</span>
+        <span class="tm-context-menu__text">Редактировать</span>
+      </button>
+      <button
+        v-if="!contextMenu.message.deletedForEveryoneAt"
+        class="tm-context-menu__item"
+        @click="handlePin(contextMenu.message)"
+      >
+        <span class="tm-context-menu__icon">📌</span>
+        <span class="tm-context-menu__text">Закрепить</span>
+      </button>
+      <button class="tm-context-menu__item" @click="handleJumpToMessage(contextMenu.message.id)">
+        <span class="tm-context-menu__icon">🎯</span>
+        <span class="tm-context-menu__text">Перейти к сообщению</span>
+      </button>
+      <button
+        v-if="canDeleteForSelf(contextMenu.message)"
+        class="tm-context-menu__item"
+        @click="handleDeleteForSelf(contextMenu.message)"
+      >
+        <span class="tm-context-menu__icon">🗑</span>
+        <span class="tm-context-menu__text">Удалить у себя</span>
+      </button>
+      <button
+        v-if="canDeleteForEveryone(contextMenu.message)"
+        class="tm-context-menu__item"
+        @click="handleDeleteForEveryone(contextMenu.message)"
+      >
+        <span class="tm-context-menu__icon">🚫</span>
+        <span class="tm-context-menu__text">Удалить у всех</span>
+      </button>
+      <button
+        class="tm-context-menu__item"
+        @click="handleEnterSelectionMode(contextMenu.message)"
+      >
+        <span class="tm-context-menu__icon">✅</span>
+        <span class="tm-context-menu__text">Выбрать</span>
+      </button>
+    </div>
+
+    <div
+      v-if="props.isSelectionMode"
+      class="tm-selection-bar"
+    >
+      <div class="tm-selection-bar__count">
+        Выбрано: {{ props.selectedMessageIds.length }}
+      </div>
+
+      <div class="tm-selection-bar__actions">
+        <button
+          class="tm-selection-bar__btn"
+          @click="emit('selectVisibleMessages')"
+        >
+          ☑️ Выбрать видимые
+        </button>
+
+        <button
+          class="tm-selection-bar__btn"
+          :disabled="props.selectedMessageIds.length === 0"
+          @click="emit('copySelectedMessages')"
+        >
+          📋 Копировать
+        </button>
+
+        <button
+          class="tm-selection-bar__btn"
+          :disabled="props.selectedMessageIds.length === 0"
+          @click="emit('forwardSelectedMessages')"
+        >
+          ↪️ Переслать
+        </button>
+
+        <button
+          class="tm-selection-bar__btn"
+          :disabled="props.selectedMessageIds.length === 0"
+          @click="emit('deleteSelectedForSelf')"
+        >
+          🗑 Удалить у себя
+        </button>
+
+        <button
+          v-if="canDeleteSelectedForEveryone()"
+          class="tm-selection-bar__btn danger"
+          :disabled="props.selectedMessageIds.length === 0"
+          @click="emit('deleteSelectedForEveryone')"
+        >
+          🚫 Удалить у всех
+        </button>
+
+        <button
+          class="tm-selection-bar__btn secondary"
+          @click="emit('clearSelection')"
+        >
+          Отмена
+        </button>
+      </div>
+    </div>
+  </main>
+</template>
+
+<style scoped>
+.tm-attach-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.tm-attach-menu {
+  position: absolute;
+  left: 14px;
+  bottom: calc(100% + 10px);
+  transform: none;
+  min-width: 148px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(10, 21, 39, 0.98), rgba(7, 15, 29, 0.98));
+  border: 1px solid rgba(102, 153, 255, 0.14);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(8px);
+  z-index: 2000;
+}
+
+.tm-attach-menu::after {
+  content: '';
+  position: absolute;
+  left: 18px;
+  bottom: -5px;
+  width: 10px;
+  height: 10px;
+  transform: rotate(45deg);
+  background: rgba(7, 15, 29, 0.98);
+  border-right: 1px solid rgba(102, 153, 255, 0.14);
+  border-bottom: 1px solid rgba(102, 153, 255, 0.14);
+}
+
+.tm-attach-menu__item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: #d8e6ff;
+  text-align: left;
+  padding: 8px 11px;
+  border-radius: 9px;
+  font-size: 14px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.tm-attach-menu__item:hover {
+  background: rgba(102, 153, 255, 0.10);
+  color: #ffffff;
+}
+</style>
+
+<style scoped>
+.tm-attach-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.tm-attach-menu {
+  position: absolute;
+  left: 14px;
+  bottom: calc(100% + 10px);
+  transform: none;
+  min-width: 148px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(10, 21, 39, 0.98), rgba(7, 15, 29, 0.98));
+  border: 1px solid rgba(102, 153, 255, 0.14);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(8px);
+  z-index: 2000;
+}
+
+.tm-attach-menu::after {
+  content: '';
+  position: absolute;
+  left: 18px;
+  bottom: -5px;
+  width: 10px;
+  height: 10px;
+  transform: rotate(45deg);
+  background: rgba(7, 15, 29, 0.98);
+  border-right: 1px solid rgba(102, 153, 255, 0.14);
+  border-bottom: 1px solid rgba(102, 153, 255, 0.14);
+}
+
+.tm-attach-menu__item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: #d8e6ff;
+  text-align: left;
+  padding: 8px 11px;
+  border-radius: 9px;
+  font-size: 14px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.tm-attach-menu__item:hover {
+  background: rgba(102, 153, 255, 0.10);
+  color: #ffffff;
+}
+</style>
+
+<style scoped>
+.tm-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.tm-attachment-image,
+.tm-attachment-video {
+  display: block;
+  max-width: 280px;
+  width: 100%;
+  border-radius: 12px;
+}
+
+.tm-attachment-audio {
+  width: 280px;
+  max-width: 100%;
+}
+
+.tm-attachment-file {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.06);
+  color: #dbe7ff;
+}
+
+.tm-attachment-file:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.tm-attachment-file__name {
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.tm-attachment-file__meta {
+  font-size: 12px;
+  opacity: 0.72;
+}
+</style>
+
+<style scoped>
+.tm-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.tm-attachment-image,
+.tm-attachment-video {
+  display: block;
+  max-width: 280px;
+  width: 100%;
+  border-radius: 12px;
+}
+
+.tm-attachment-audio {
+  width: 280px;
+  max-width: 100%;
+}
+
+.tm-attachment-file {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.06);
+  color: #dbe7ff;
+}
+
+.tm-attachment-file:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.tm-attachment-file__name {
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.tm-attachment-file__meta {
+  font-size: 12px;
+  opacity: 0.72;
+}
+</style>
+
+<style scoped>
+.tm-message-card--image-only {
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  border: none !important;
+}
+
+.tm-message-card--image-only .tm-message-text {
+  display: none;
+}
+
+.tm-message-card--image-only .tm-attachments {
+  margin-top: 0;
+}
+
+.tm-message-card--image-only .tm-attachment-image {
+  max-width: 360px;
+  border-radius: 18px;
+  cursor: zoom-in;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+
+.tm-image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  background: rgba(4, 10, 20, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.tm-image-lightbox__image {
+  max-width: min(92vw, 1400px);
+  max-height: 90vh;
+  border-radius: 16px;
+  display: block;
+}
+
+.tm-image-lightbox__close {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  border: none;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 20px;
+}
+</style>

@@ -1,0 +1,497 @@
+
+<script setup lang="ts">
+
+type Conversation = {
+
+  id: string;
+
+  type: 'direct' | 'group' | 'channel';
+
+  title: string | null;
+
+};
+
+
+
+const props = defineProps<{
+
+  activeConversation: Conversation | null;
+
+  presenceText?: string;
+
+  isOnline?: boolean;
+
+  isTyping?: boolean;
+
+}>();
+
+
+
+const emit = defineEmits<{
+
+  back: [];
+
+  openInfo: [];
+
+}>();
+
+
+
+function titleLabel() {
+
+  if (!props.activeConversation) return 'Чаты';
+
+  return props.activeConversation.title || 'Без названия';
+
+}
+
+
+
+function isDirectChat() {
+
+  return props.activeConversation?.type === 'direct';
+
+}
+
+
+
+function subtitleLabel() {
+
+  if (!props.activeConversation) return '';
+
+
+
+  if (props.activeConversation.type === 'direct') return 'онлайн';
+
+  if (props.activeConversation.type === 'group') return 'Группа';
+
+  return 'Канал';
+
+}
+
+
+
+function initials(value: string) {
+
+  return value.trim().charAt(0).toUpperCase();
+
+}
+
+</script>
+
+
+
+<template>
+
+  <div class="tm-mobile-chat-header">
+
+    <button
+
+      type="button"
+
+      class="tm-mobile-chat-header__back"
+
+      aria-label="Назад"
+
+      @click="emit('back')"
+
+    >
+
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+
+        <path
+
+          d="M14.7 5.3a1 1 0 0 1 0 1.4L10.41 11H20a1 1 0 1 1 0 2h-9.59l4.3 4.3a1 1 0 1 1-1.42 1.4l-6-6a1 1 0 0 1 0-1.4l6-6a1 1 0 0 1 1.41 0Z"
+
+          fill="currentColor"
+
+        />
+
+      </svg>
+
+    </button>
+
+
+
+    <div class="tm-mobile-chat-header__avatar">
+
+      {{ initials(titleLabel()) }}
+
+    </div>
+
+
+
+    <div class="tm-mobile-chat-header__meta">
+
+      <div class="tm-mobile-chat-header__title">{{ titleLabel() }}</div>
+
+
+
+      <div
+
+        :class="[
+
+          'tm-mobile-chat-header__subtitle',
+
+          { 'tm-mobile-chat-header__subtitle--online': isDirectChat() },
+
+        ]"
+
+      >
+
+        <span
+
+          v-if="isDirectChat()"
+
+          class="tm-mobile-chat-header__status-dot"
+
+          aria-hidden="true"
+
+        />
+
+        <span>{{ subtitleLabel() }}</span>
+
+      </div>
+
+    </div>
+
+
+
+    <div class="tm-mobile-chat-header__actions">
+
+      <button
+
+        type="button"
+
+        class="tm-mobile-chat-header__action"
+
+        aria-label="Видео"
+
+      >
+
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+
+          <path
+
+            d="M4 7a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v2.2l3.35-2.01A1 1 0 0 1 20 8.05v7.9a1 1 0 0 1-1.65.86L15 14.8V17a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7Z"
+
+            fill="currentColor"
+
+          />
+
+        </svg>
+
+      </button>
+
+
+
+      <button
+
+        type="button"
+
+        class="tm-mobile-chat-header__action"
+
+        aria-label="Звонок"
+
+      >
+
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+
+          <path
+
+            d="M6.62 10.79a15.54 15.54 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.02-.24c1.11.37 2.3.56 3.57.56a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C10.06 21 3 13.94 3 5a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.27.19 2.46.56 3.57a1 1 0 0 1-.24 1.02l-2.2 2.2Z"
+
+            fill="currentColor"
+
+          />
+
+        </svg>
+
+      </button>
+
+
+
+      <button
+
+        type="button"
+
+        class="tm-mobile-chat-header__action tm-mobile-chat-header__action--more"
+
+        aria-label="Информация"
+
+        @click="emit('openInfo')"
+
+      >
+
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+
+          <circle cx="12" cy="5" r="1.9" fill="currentColor" />
+
+          <circle cx="12" cy="12" r="1.9" fill="currentColor" />
+
+          <circle cx="12" cy="19" r="1.9" fill="currentColor" />
+
+        </svg>
+
+      </button>
+
+    </div>
+
+  </div>
+
+</template>
+
+
+
+<style scoped>
+
+.tm-mobile-chat-header {
+
+  position: sticky;
+
+  top: 0;
+
+  z-index: 80;
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 12px;
+
+  min-height: 74px;
+
+  padding: calc(env(safe-area-inset-top, 0px) + 10px) 14px 10px;
+
+  background: linear-gradient(180deg, #142941 0%, #10263c 100%);
+
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+
+  box-shadow: none;
+
+}
+
+
+
+.tm-mobile-chat-header__back {
+
+  width: 40px;
+
+  height: 40px;
+
+  min-width: 40px;
+
+  border: 0;
+
+  border-radius: 999px;
+
+  background: rgba(255, 255, 255, 0.1);
+
+  color: #ffffff;
+
+  display: grid;
+
+  place-items: center;
+
+  padding: 0;
+
+  flex: 0 0 auto;
+
+  cursor: pointer;
+
+}
+
+
+
+.tm-mobile-chat-header__back svg {
+
+  width: 20px;
+
+  height: 20px;
+
+  display: block;
+
+}
+
+
+
+.tm-mobile-chat-header__avatar {
+
+  width: 42px;
+
+  height: 42px;
+
+  min-width: 42px;
+
+  border-radius: 999px;
+
+  background: linear-gradient(180deg, #ffb84c 0%, #ff8f33 100%);
+
+  color: #ffffff;
+
+  font-size: 22px;
+
+  line-height: 1;
+
+  font-weight: 800;
+
+  display: grid;
+
+  place-items: center;
+
+  flex: 0 0 auto;
+
+}
+
+
+
+.tm-mobile-chat-header__meta {
+
+  min-width: 0;
+
+  flex: 1 1 auto;
+
+}
+
+
+
+.tm-mobile-chat-header__title {
+
+  color: #ffffff;
+
+  font-size: 17px;
+
+  line-height: 1.1;
+
+  font-weight: 700;
+
+  white-space: nowrap;
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+}
+
+
+
+.tm-mobile-chat-header__subtitle {
+
+  margin-top: 4px;
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 6px;
+
+  min-width: 0;
+
+  color: rgba(255, 255, 255, 0.82);
+
+  font-size: 12px;
+
+  line-height: 1;
+
+  font-weight: 500;
+
+  white-space: nowrap;
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+}
+
+
+
+.tm-mobile-chat-header__subtitle--online {
+
+  color: #69d36f;
+
+}
+
+
+
+.tm-mobile-chat-header__status-dot {
+
+  width: 7px;
+
+  height: 7px;
+
+  min-width: 7px;
+
+  border-radius: 999px;
+
+  background: #34d058;
+
+  box-shadow: 0 0 0 2px rgba(52, 208, 88, 0.18);
+
+}
+
+
+
+.tm-mobile-chat-header__actions {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 8px;
+
+  flex: 0 0 auto;
+
+}
+
+
+
+.tm-mobile-chat-header__action {
+
+  width: 24px;
+
+  height: 24px;
+
+  min-width: 24px;
+
+  border: 0;
+
+  background: transparent;
+
+  color: #ffffff;
+
+  display: grid;
+
+  place-items: center;
+
+  padding: 0;
+
+  opacity: 0.96;
+
+  cursor: pointer;
+
+}
+
+
+
+.tm-mobile-chat-header__action svg {
+
+  width: 20px;
+
+  height: 20px;
+
+  display: block;
+
+}
+
+
+
+.tm-mobile-chat-header__action--more svg {
+
+  width: 18px;
+
+  height: 18px;
+
+}
+
+</style>
+

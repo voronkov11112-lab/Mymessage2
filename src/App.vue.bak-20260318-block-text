@@ -1,0 +1,2091 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { api, logoutRequest, restoreSession, setToken } from './services/api';
+import { connectSocket, disconnectSocket, getSocket } from './services/socket';
+import './styles/app.css';
+
+import MainDrawer from './components/MainDrawer.vue';
+import SidebarChats from './components/SidebarChats.vue';
+import ChatView from './components/ChatView.vue';
+import CreateGroupModal from './components/CreateGroupModal.vue';
+import CreateChannelModal from './components/CreateChannelModal.vue';
+import ChatInfoModal from './components/ChatInfoModal.vue';
+import ForwardMessagesModal from './components/ForwardMessagesModal.vue';
+import UserProfileModal from './components/UserProfileModal.vue';
+import DirectChatProfileModal from './components/DirectChatProfileModal.vue';
+
+type User = {
+  id: string;
+  username: string;
+  description?: string | null;
+  avatarUrl?: string | null;
+};
+
+type Conversation = {
+  id: string;
+  type: 'direct' | 'group' | 'channel';
+  title: string | null;
+  createdAt: string;
+  lastMessageText: string | null;
+  lastMessageCreatedAt: string | null;
+  unreadCount: number;
+};
+
+type MessageReply = {
+  id: string;
+  userId: string;
+  username: string;
+  text: string;
+  createdAt: string;
+};
+
+type Message = {
+  id: string;
+  seq?: number;
+  clientId?: string | null;
+  conversationId: string;
+  userId: string;
+  username: string;
+  text: string;
+  createdAt: string;
+  editedAt?: string | null;
+  isRead?: boolean;
+  status?: 'sending' | 'failed' | 'sent';
+  replyTo: MessageReply | null;
+  deletedForEveryoneAt?: string | null;
+  forwardedFromMessageId?: string | null;
+  forwardedFromUserId?: string | null;
+  forwardedFromUsername?: string | null;
+};
+
+type Participant = {
+  userId: string;
+  username: string;
+  role: 'owner' | 'admin' | 'member';
+  joinedAt: string;
+};
+
+function compareMessagesAsc(a: Message, b: Message) {
+  if (typeof a.seq === 'number' && typeof b.seq === 'number') {
+    return a.seq - b.seq;
+  }
+
+  if (a.createdAt < b.createdAt) return -1;
+  if (a.createdAt > b.createdAt) return 1;
+  return a.id.localeCompare(b.id);
+}
+
+function mergeMessagesStable(current: Message[], incoming: Message[]) {
+  const byId = new Map<string, Message>();
+
+  for (const message of current) {
+    byId.set(message.id, message);
+  }
+
+  for (const message of incoming) {
+    const prev = byId.get(message.id);
+    byId.set(message.id, prev ? { ...prev, ...message } : message);
+  }
+
+  return Array.from(byId.values()).sort(compareMessagesAsc);
+}
+
+function generateClientId() {
+  if (typeof globalThis !== 'undefined' && globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+
+  return `client-${Date.now()}-${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;
+}
+
+function createOptimisticMessage(params: {
+  conversationId: string;
+  text: string;
+  username: string;
+  replyTo: MessageReply | null;
+}) {
+  const clientId = generateClientId();
+  const now = new Date().toISOString();
+
+  const optimisticMessage: Message = {
+    id: `temp:${clientId}`,
+    clientId,
+    conversationId: params.conversationId,
+    userId: 'self',
+    username: params.username,
+    text: params.text,
+    createdAt: now,
+    editedAt: null,
+    isRead: false,
+    status: 'sending',
+    replyTo: params.replyTo,
+    deletedForEveryoneAt: null,
+    forwardedFromMessageId: null,
+    forwardedFromUserId: null,
+    forwardedFromUsername: null,
+  };
+
+  return { clientId, optimisticMessage };
+}
+
+function insertOptimisticMessage(message: Message) {
+  messages.value = mergeMessagesStable(messages.value, [message]);
+  scrollRevision.value += 1;
+}
+
+function markOptimisticMessageFailed(tempId: string) {
+  messages.value = messages.value.map((message) =>
+    message.id === tempId
+      ? { ...message, status: 'failed' }
+      : message
+  );
+}
+
+function reconcileOptimisticMessage(serverMessage: Message) {
+  let optimisticIndex = -1;
+
+  if (serverMessage.clientId) {
+    optimisticIndex = messages.value.findIndex(
+      (message) =>
+        (message.status === 'sending' || message.status === 'failed') &&
+        message.clientId === serverMessage.clientId
+    );
+  }
+
+  if (optimisticIndex === -1) {
+    optimisticIndex = messages.value.findIndex((message) => {
+      if (message.status !== 'sending' && message.status !== 'failed') return false;
+      if (message.username !== serverMessage.username) return false;
+      if (message.conversationId !== serverMessage.conversationId) return false;
+      if (message.text !== serverMessage.text) return false;
+
+      const optimisticTime = new Date(message.createdAt).getTime();
+      const serverTime = new Date(serverMessage.createdAt).getTime();
+      return Math.abs(serverTime - optimisticTime) < 30000;
+    });
+  }
+
+  if (optimisticIndex === -1) {
+    messages.value = mergeMessagesStable(messages.value, [{ ...serverMessage, status: 'sent' }]);
+    return;
+  }
+
+  const next = [...messages.value];
+  next.splice(optimisticIndex, 1, { ...serverMessage, status: 'sent' });
+  messages.value = mergeMessagesStable([], next);
+}
+
+/**
+ * Snapshot of per-conversation message state stored in the in-memory cache.
+ * Jump-mode entries are intentionally not restored on revisit so that users
+ * always return to the latest messages rather than a stale historical position.
+ *
+ * Unread state (firstUnreadMessageId / pendingNewMessagesCount) is persisted so
+ * that when the user returns to a conversation they had partially read with an
+ * active separator, the separator is still visible until they scroll to the
+ * bottom (at which point handleReachLatest clears it and marks the chat read).
+ */
+type ConversationCache = {
+  messages: Message[];
+  hasMoreOlder: boolean;
+  hasMoreNewer: boolean;
+  isJumpMode: boolean;
+  pinnedMessage: Message | null;
+  firstUnreadMessageId: string | null;
+  pendingNewMessagesCount: number;
+};
+
+const MAX_CACHE_SIZE = 10;
+const conversationCache = new Map<string, ConversationCache>();
+// Per-conversation request token: incremented on each loadMessages call so only
+// the latest in-flight response is ever applied (stale-response protection).
+const conversationLoadTokens = new Map<string, number>();
+// Per-conversation context token: incremented on each openConversation call so
+// that any in-flight loadOlderMessages / loadNewerMessages result that was
+// started in a previous "session" of the same conversation (i.e. the user
+// switched away and switched back) is discarded rather than applied to the
+// freshly-opened timeline.
+const conversationContextTokens = new Map<string, number>();
+
+const savedToken = localStorage.getItem('token');
+const savedUser = localStorage.getItem('currentUser');
+
+const token = ref<string | null>(savedToken);
+const currentUser = ref<{ username: string } | null>(savedUser ? JSON.parse(savedUser) : null);
+
+const mode = ref<'auth' | 'app'>(savedToken ? 'app' : 'auth');
+const username = ref('');
+const password = ref('');
+const errorText = ref('');
+
+const users = ref<User[]>([]);
+const conversations = ref<Conversation[]>([]);
+const activeConversationId = ref<string | null>(null);
+const messages = ref<Message[]>([]);
+const participants = ref<Participant[]>([]);
+const text = ref('');
+
+const loadingOlder = ref(false);
+const hasMoreOlder = ref(true);
+const hasMoreNewer = ref(false);
+const loadingNewer = ref(false);
+const isJumpMode = ref(false);
+const isChatNearBottom = ref(true);
+const pendingNewMessagesCount = ref(0);
+const copyToastText = ref('');
+const copyToastVisible = ref(false);
+let copyToastTimer: number | null = null;
+// Stable anchor for the unread separator: holds the ID of the first message
+// that arrived while the user was away from the bottom.  Using a message ID
+// instead of an index-based calculation prevents the separator from drifting
+// when older or newer pages are loaded (which change messages.length but not
+// the absolute position of the anchor message).
+const firstUnreadMessageId = ref<string | null>(null);
+
+const replyToMessage = ref<Message | null>(null);
+const editingMessage = ref<Message | null>(null);
+const pinnedMessage = ref<Message | null>(null);
+const selectedMessageIds = ref<string[]>([]);
+const forwardMessageIds = ref<string[]>([]);
+const isSelectionMode = ref(false);
+// Incremented each time the sender's own message arrives via socket so that
+// ChatView can watch this value and deterministically scroll to the new message
+// regardless of whether wasNearBottom was true or false.
+const scrollRevision = ref(0);
+
+const onlineUserIds = ref<string[]>([]);
+const isUserProfileModalOpen = ref(false);
+const selectedUserProfile = ref<User | null>(null);
+const isDirectChatProfileOpen = ref(false);
+const typingText = ref('');
+
+const mutedDirectUserIds = ref<string[]>(
+  JSON.parse(localStorage.getItem('mutedDirectUserIds') || '[]')
+);
+
+const directRelationship = ref<{
+  isBlockedByMe: boolean;
+  hasBlockedMe: boolean;
+}>({
+  isBlockedByMe: false,
+  hasBlockedMe: false,
+});
+let typingTimeout: number | null = null;
+
+const searchQuery = ref('');
+const isMenuOpen = ref(false);
+const isChatInfoModalOpen = ref(false);
+const isCreateGroupModalOpen = ref(false);
+const isCreateChannelModalOpen = ref(false);
+const isForwardModalOpen = ref(false);
+
+const groupTitle = ref('');
+const selectedGroupUserIds = ref<string[]>([]);
+const channelTitle = ref('');
+const forwardSearchQuery = ref('');
+
+const activeConversation = computed(() =>
+  conversations.value.find((item) => item.id === activeConversationId.value) || null
+);
+
+const directChatProfileUser = computed(() => {
+  if (!activeConversation.value || activeConversation.value.type !== 'direct') return null;
+
+  const conversationTitle = (activeConversation.value.title || '').trim().toLowerCase();
+  if (!conversationTitle) return null;
+
+  const user =
+    users.value.find((item) => item.username.trim().toLowerCase() === conversationTitle) || null;
+
+  if (!user) return null;
+
+  return {
+    ...user,
+    isOnline: onlineUserIds.value.includes(user.id),
+  };
+});
+
+const isDirectChatMuted = computed(() => {
+  const user = directChatProfileUser.value;
+  if (!user) return false;
+  return mutedDirectUserIds.value.includes(user.id);
+});
+
+const isDirectChatBlockedByMe = computed(() => directRelationship.value.isBlockedByMe);
+const hasDirectChatBlockedMe = computed(() => directRelationship.value.hasBlockedMe);
+
+const directChatLinksCount = computed(() => {
+  if (!activeConversation.value || activeConversation.value.type !== 'direct') return 0;
+
+  const linkRegex = /(https?:\/\/|www\.)\S+/i;
+
+  return messages.value.filter((message) => {
+    if (message.conversationId !== activeConversation.value?.id) return false;
+    return linkRegex.test(message.text || '');
+  }).length;
+});
+
+const directChatSharedGroupsCount = computed(() => 0);
+
+const sendBlockedReason = computed(() => {
+  if (!activeConversation.value || activeConversation.value.type !== 'direct') return '';
+  if (hasDirectChatBlockedMe.value) return 'Вас заблокировали';
+  if (isDirectChatBlockedByMe.value) return 'Вы заблокировали пользователя';
+  return '';
+});
+
+
+watch(
+  () => directChatProfileUser.value?.id || null,
+  async () => {
+    await loadDirectRelationship();
+  },
+  { immediate: true }
+);
+
+const filteredConversations = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase();
+  if (!q) return conversations.value;
+
+  return conversations.value.filter((conversation) => {
+    const title = (conversation.title || conversation.type || '').toLowerCase();
+    const preview = (conversation.lastMessageText || '').toLowerCase();
+    return title.includes(q) || preview.includes(q);
+  });
+});
+
+const forwardTargetConversations = computed(() => {
+  const q = forwardSearchQuery.value.trim().toLowerCase();
+
+  const ranked = [...conversations.value].sort((a, b) => {
+    if (a.id === activeConversationId.value) return -1;
+    if (b.id === activeConversationId.value) return 1;
+    return 0;
+  });
+
+  return ranked.filter((conversation) => {
+    const title = (conversation.title || conversation.type || '').toLowerCase();
+    const preview = (conversation.lastMessageText || '').toLowerCase();
+    const typeLabel = (conversation.type || '').toLowerCase();
+    const currentLabel = conversation.id === activeConversationId.value ? 'текущий чат' : '';
+
+    if (!q) return true;
+
+    return (
+      title.includes(q) ||
+      preview.includes(q) ||
+      typeLabel.includes(q) ||
+      currentLabel.includes(q)
+    );
+  });
+});
+
+const myParticipant = computed(() =>
+  participants.value.find((p) => p.username === currentUser.value?.username) || null
+);
+
+watch(mutedDirectUserIds, (value) => {
+  localStorage.setItem('mutedDirectUserIds', JSON.stringify(value));
+}, { deep: true });
+
+const canSendMessage = computed(() => {
+  if (!activeConversation.value) return false;
+  if (activeConversation.value.type !== 'channel') return true;
+  return myParticipant.value?.role === 'owner' || myParticipant.value?.role === 'admin';
+});
+
+const unreadMap = computed(() => {
+  return conversations.value.reduce<Record<string, number>>((acc, conversation) => {
+    if (conversation.id === activeConversationId.value && isChatNearBottom.value) {
+      acc[conversation.id] = 0;
+    } else {
+      acc[conversation.id] = conversation.unreadCount || 0;
+    }
+    return acc;
+  }, {});
+});
+
+
+watch(activeConversationId, () => {
+  editingMessage.value = null;
+  replyToMessage.value = null;
+  text.value = '';
+});
+
+function saveSession(nextToken: string, user: { username: string }) {
+  token.value = nextToken;
+  currentUser.value = user;
+  localStorage.setItem('token', nextToken);
+  localStorage.setItem('currentUser', JSON.stringify(user));
+  setToken(nextToken);
+}
+
+function clearSession() {
+  token.value = null;
+  currentUser.value = null;
+  localStorage.removeItem('token');
+  localStorage.removeItem('currentUser');
+  setToken(null);
+}
+
+function toggleGroupUser(userId: string) {
+  if (selectedGroupUserIds.value.includes(userId)) {
+    selectedGroupUserIds.value = selectedGroupUserIds.value.filter((id) => id !== userId);
+  } else {
+    selectedGroupUserIds.value = [...selectedGroupUserIds.value, userId];
+  }
+}
+
+function closeTopOverlay() {
+  if (isDirectChatProfileOpen.value) {
+    isDirectChatProfileOpen.value = false;
+    return;
+  }
+
+  if (isChatInfoModalOpen.value) {
+    isChatInfoModalOpen.value = false;
+    return;
+  }
+
+  if (isCreateGroupModalOpen.value) {
+    isCreateGroupModalOpen.value = false;
+    return;
+  }
+
+  if (isCreateChannelModalOpen.value) {
+    isCreateChannelModalOpen.value = false;
+    return;
+  }
+
+  if (isForwardModalOpen.value) {
+    isForwardModalOpen.value = false;
+    forwardSearchQuery.value = '';
+    return;
+  }
+
+  if (isMenuOpen.value) {
+    isMenuOpen.value = false;
+  }
+}
+
+function onKeyDown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    closeTopOverlay();
+  }
+}
+
+function emitTypingStart() {
+  const socket = getSocket();
+  if (!socket || !activeConversationId.value) return;
+
+  socket.emit('typing:start', { conversationId: activeConversationId.value });
+
+  if (typingTimeout) {
+    window.clearTimeout(typingTimeout);
+  }
+
+  typingTimeout = window.setTimeout(() => {
+    emitTypingStop();
+  }, 1200);
+}
+
+function emitTypingStop() {
+  const socket = getSocket();
+  if (!socket || !activeConversationId.value) return;
+
+  socket.emit('typing:stop', { conversationId: activeConversationId.value });
+
+  if (typingTimeout) {
+    window.clearTimeout(typingTimeout);
+    typingTimeout = null;
+  }
+}
+
+watch(text, (value) => {
+  if (!activeConversationId.value) return;
+
+  if (value.trim()) {
+    emitTypingStart();
+  } else {
+    emitTypingStop();
+  }
+});
+
+onMounted(() => {
+  window.addEventListener('keydown', onKeyDown);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeyDown);
+
+  if (typingTimeout) {
+    window.clearTimeout(typingTimeout);
+    typingTimeout = null;
+  }
+});
+
+async function register() {
+  errorText.value = '';
+
+  try {
+    const response = await api.post('/auth/register', {
+      username: username.value,
+      password: password.value,
+    });
+
+    saveSession(response.data.token, { username: response.data.user.username });
+    await startApp();
+  } catch (error: any) {
+    errorText.value = error?.response?.data?.error || error?.message || 'Register error';
+  }
+}
+
+async function login() {
+  errorText.value = '';
+
+  try {
+    const response = await api.post('/auth/login', {
+      username: username.value,
+      password: password.value,
+    });
+
+    saveSession(response.data.token, { username: response.data.user.username });
+    await startApp();
+  } catch (error: any) {
+    errorText.value = error?.response?.data?.error || error?.message || 'Login error';
+  }
+}
+
+async function loadUsers() {
+  const response = await api.get('/users');
+  users.value = response.data.users;
+}
+
+async function loadConversations() {
+  const response = await api.get('/conversations');
+  conversations.value = response.data.conversations;
+}
+
+/**
+ * Persist the current message state for `conversationId` into the in-memory
+ * cache so it can be restored instantly the next time that conversation is
+ * opened.  Uses LRU-style eviction capped at MAX_CACHE_SIZE entries.
+ */
+function saveConversationToCache(conversationId: string) {
+  if (messages.value.length === 0) return;
+  // Re-insert to keep insertion-order LRU correct
+  conversationCache.delete(conversationId);
+  conversationCache.set(conversationId, {
+    messages: [...messages.value],
+    hasMoreOlder: hasMoreOlder.value,
+    hasMoreNewer: hasMoreNewer.value,
+    isJumpMode: isJumpMode.value,
+    pinnedMessage: pinnedMessage.value,
+    firstUnreadMessageId: firstUnreadMessageId.value,
+    pendingNewMessagesCount: pendingNewMessagesCount.value,
+  });
+  if (conversationCache.size > MAX_CACHE_SIZE) {
+    // Use a loop in case multiple entries were somehow added beyond the limit.
+    while (conversationCache.size > MAX_CACHE_SIZE) {
+      const oldest = conversationCache.keys().next().value;
+      if (oldest) conversationCache.delete(oldest);
+      else break;
+    }
+  }
+}
+
+async function loadMessages(conversationId: string) {
+  const requestToken = (conversationLoadTokens.get(conversationId) || 0) + 1;
+  conversationLoadTokens.set(conversationId, requestToken);
+
+  const response = await api.get(`/conversations/${conversationId}/messages?limit=30`);
+
+  if (activeConversationId.value !== conversationId) return;
+  if (conversationLoadTokens.get(conversationId) !== requestToken) return;
+
+  const incoming = Array.isArray(response.data.messages) ? response.data.messages : [];
+  messages.value = mergeMessagesStable([], incoming);
+  hasMoreOlder.value = !!response.data.hasMoreOlder;
+  hasMoreNewer.value = !!response.data.hasMoreNewer;
+  isJumpMode.value = false;
+
+  saveConversationToCache(conversationId);
+}
+
+async function loadOlderMessages() {
+  if (!activeConversationId.value || loadingOlder.value || !hasMoreOlder.value || messages.value.length === 0) {
+    return;
+  }
+
+  const conversationId = activeConversationId.value;
+  const contextToken = conversationContextTokens.get(conversationId) || 0;
+  loadingOlder.value = true;
+
+  try {
+    const oldest = messages.value[0];
+    const response = await api.get(`/conversations/${conversationId}/messages`, {
+      params: {
+        limit: 40,
+        beforeSeq: oldest.seq,
+      },
+    });
+
+    if (activeConversationId.value !== conversationId) return;
+    if ((conversationContextTokens.get(conversationId) || 0) !== contextToken) return;
+
+    const older = Array.isArray(response.data.messages) ? response.data.messages : [];
+    console.log('[App] loadOlderMessages result', JSON.stringify({
+      requestedBeforeId: oldest.id,
+      requestedBeforeSeq: oldest.seq ?? null,
+      requestedBeforeCreatedAt: oldest.createdAt,
+      receivedCount: older.length,
+      firstReceivedId: older[0]?.id || null,
+      firstReceivedSeq: older[0]?.seq ?? null,
+      lastReceivedId: older[older.length - 1]?.id || null,
+      lastReceivedSeq: older[older.length - 1]?.seq ?? null,
+      hasMoreOlder: !!response.data.hasMoreOlder,
+      messagesBefore: messages.value.length,
+      messagesAfterMerge: mergeMessagesStable(older, messages.value).length
+    }));
+    messages.value = mergeMessagesStable(older, messages.value);
+    hasMoreOlder.value = !!response.data.hasMoreOlder;
+  } finally {
+    loadingOlder.value = false;
+  }
+}
+
+async function loadNewerMessages() {
+  if (!activeConversationId.value || loadingNewer.value || !hasMoreNewer.value || messages.value.length === 0) return;
+
+  const conversationId = activeConversationId.value;
+  const contextToken = conversationContextTokens.get(conversationId) || 0;
+  loadingNewer.value = true;
+
+  try {
+    const newest = messages.value[messages.value.length - 1];
+    const response = await api.get(`/conversations/${conversationId}/messages`, {
+      params: {
+        limit: 40,
+        afterSeq: newest.seq,
+      }
+    });
+
+    if (activeConversationId.value !== conversationId) return;
+    if ((conversationContextTokens.get(conversationId) || 0) !== contextToken) return;
+
+    const newer = Array.isArray(response.data.messages) ? response.data.messages : [];
+    messages.value = mergeMessagesStable(messages.value, newer);
+    hasMoreNewer.value = !!response.data.hasMoreNewer;
+
+    if (!hasMoreNewer.value) {
+      isJumpMode.value = false;
+    }
+  } finally {
+    loadingNewer.value = false;
+  }
+}
+
+async function loadParticipants(conversationId: string) {
+  const response = await api.get(`/conversations/${conversationId}/participants`);
+  participants.value = response.data.participants;
+}
+
+async function markConversationRead(conversationId: string) {
+  await api.post(`/conversations/${conversationId}/read`);
+  // Notify other participants in real-time that this user has read the conversation.
+  // The server will broadcast a `message:read` event to the room so that the sender
+  // can update the read-receipt (✓✓) on their messages without a full reload.
+  const socket = getSocket();
+  if (socket) {
+    socket.emit('conversation:read', { conversationId });
+  }
+}
+
+function handleNearBottomChange(value: boolean) {
+  isChatNearBottom.value = value;
+}
+
+async function appendIncomingMessage(message: Message) {
+  const isMine = message.username === currentUser.value?.username;
+  const alreadyExists = messages.value.some((m) => m.id === message.id);
+
+  if (isMine) {
+    reconcileOptimisticMessage(message);
+  } else {
+    messages.value = mergeMessagesStable(messages.value, [message]);
+  }
+
+  if (isJumpMode.value) {
+    if (!isMine && !alreadyExists) {
+      if (firstUnreadMessageId.value === null) {
+        firstUnreadMessageId.value = message.id;
+      }
+      pendingNewMessagesCount.value += 1;
+    }
+    return;
+  }
+
+  if (isMine) {
+    pendingNewMessagesCount.value = 0;
+    firstUnreadMessageId.value = null;
+    scrollRevision.value += 1;
+    return;
+  }
+
+  if (isChatNearBottom.value) {
+    try {
+      await markConversationRead(message.conversationId);
+    } catch {
+      // ignore transient read-mark errors so realtime flow keeps working
+    }
+
+    if (message.conversationId === activeConversationId.value) {
+      pendingNewMessagesCount.value = 0;
+      firstUnreadMessageId.value = null;
+    }
+    return;
+  }
+
+  if (!alreadyExists) {
+    if (firstUnreadMessageId.value === null) {
+      firstUnreadMessageId.value = message.id;
+    }
+    pendingNewMessagesCount.value += 1;
+  }
+}
+
+async function handleReachLatest() {
+  if (!activeConversationId.value) return;
+  if (!isChatNearBottom.value) return;
+
+  // Capture the conversation ID so that the async calls below can be guarded
+  // against a conversation switch that might happen while they are in-flight.
+  const conversationId = activeConversationId.value;
+
+  // Clear unread state synchronously as part of the "user reached the bottom"
+  // transition so the separator and pending-count badge disappear immediately.
+  pendingNewMessagesCount.value = 0;
+  firstUnreadMessageId.value = null;
+
+  await markConversationRead(conversationId);
+  if (activeConversationId.value !== conversationId) return;
+
+  await loadConversations();
+  if (activeConversationId.value !== conversationId) return;
+}
+
+async function handleJumpToLatest() {
+  if (!activeConversationId.value) return;
+
+  const conversationId = activeConversationId.value;
+  const contextToken = conversationContextTokens.get(conversationId) || 0;
+
+  pendingNewMessagesCount.value = 0;
+  firstUnreadMessageId.value = null;
+  hasMoreNewer.value = false;
+  isJumpMode.value = false;
+
+  try {
+    const response = await api.get(`/conversations/${conversationId}/messages?limit=30`);
+
+    if (activeConversationId.value !== conversationId) return;
+    if ((conversationContextTokens.get(conversationId) || 0) !== contextToken) return;
+
+    const latestMessages = Array.isArray(response.data.messages) ? response.data.messages : [];
+    messages.value = mergeMessagesStable([], latestMessages);
+    hasMoreOlder.value = !!response.data.hasMoreOlder;
+    hasMoreNewer.value = false;
+    isJumpMode.value = false;
+
+    scrollRevision.value += 1;
+
+    await markConversationRead(conversationId);
+    if (activeConversationId.value !== conversationId) return;
+
+    await loadConversations();
+  } catch (error) {
+    console.error('Failed to jump to latest:', error);
+  }
+}
+
+function handleReplyToMessage(message: Message) {
+  replyToMessage.value = message;
+}
+
+function handleClearReply() {
+  replyToMessage.value = null;
+}
+
+function handlePinMessage(message: Message) {
+  pinnedMessage.value = message;
+}
+
+async function deleteMessages(messageIds: string[], mode: 'self' | 'everyone') {
+  if (!activeConversationId.value || messageIds.length === 0) return;
+
+  const conversationId = activeConversationId.value;
+
+  await api.post(`/conversations/${conversationId}/messages/delete`, {
+    messageIds,
+    mode,
+  });
+
+  const socket = getSocket();
+  if (socket) {
+    socket.emit('message:deleted', {
+      conversationId,
+      messageIds,
+      mode,
+    });
+  }
+
+  if (mode === 'self') {
+    messages.value = messages.value.filter((message) => !messageIds.includes(message.id));
+  } else {
+    messages.value = messages.value.map((message) => {
+      if (!messageIds.includes(message.id)) return message;
+      return {
+        ...message,
+        text: 'Сообщение удалено',
+        replyTo: null,
+        deletedForEveryoneAt: new Date().toISOString(),
+      };
+    });
+  }
+
+  if (pinnedMessage.value && messageIds.includes(pinnedMessage.value.id)) {
+    pinnedMessage.value =
+      mode === 'everyone'
+        ? {
+            ...pinnedMessage.value,
+            text: 'Сообщение удалено',
+            replyTo: null,
+            deletedForEveryoneAt: new Date().toISOString(),
+          }
+        : null;
+  }
+
+  selectedMessageIds.value = selectedMessageIds.value.filter((id) => !messageIds.includes(id));
+  if (selectedMessageIds.value.length === 0) {
+    isSelectionMode.value = false;
+  }
+
+  await loadConversations();
+}
+
+async function handleDeleteForSelf(message: Message) {
+  await deleteMessages([message.id], 'self');
+}
+
+async function handleDeleteForEveryone(message: Message) {
+  await deleteMessages([message.id], 'everyone');
+}
+
+function enterSelectionMode(message: Message) {
+  isSelectionMode.value = true;
+  selectedMessageIds.value = [message.id];
+}
+
+function toggleMessageSelection(messageId: string) {
+  if (!messageId) return;
+
+  if (!isSelectionMode.value) {
+    isSelectionMode.value = true;
+    selectedMessageIds.value = [messageId];
+    return;
+  }
+
+  if (selectedMessageIds.value.includes(messageId)) {
+    selectedMessageIds.value = selectedMessageIds.value.filter((id) => id !== messageId);
+  } else {
+    selectedMessageIds.value = [...selectedMessageIds.value, messageId];
+  }
+
+  if (selectedMessageIds.value.length === 0) {
+    isSelectionMode.value = false;
+  }
+}
+
+function clearSelection() {
+  selectedMessageIds.value = [];
+  isSelectionMode.value = false;
+}
+
+function showCopyToast(message: string) {
+  copyToastText.value = message;
+  copyToastVisible.value = true;
+
+  if (copyToastTimer) {
+    window.clearTimeout(copyToastTimer);
+  }
+
+  copyToastTimer = window.setTimeout(() => {
+    copyToastVisible.value = false;
+    copyToastTimer = null;
+  }, 2200);
+}
+
+function selectVisibleMessages() {
+  const visibleIds = messages.value
+    .map((message) => message.id)
+    .filter(Boolean);
+
+  selectedMessageIds.value = Array.from(new Set(visibleIds));
+  isSelectionMode.value = selectedMessageIds.value.length > 0;
+}
+
+function legacyCopyText(text: string) {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.top = '0';
+  textarea.style.left = '-9999px';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+
+  const selection = document.getSelection();
+  const originalRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+
+  let copied = false;
+
+  try {
+    copied = document.execCommand('copy');
+  } catch (error) {
+    console.error('execCommand copy failed', error);
+    copied = false;
+  }
+
+  document.body.removeChild(textarea);
+
+  if (originalRange && selection) {
+    selection.removeAllRanges();
+    selection.addRange(originalRange);
+  }
+
+  return copied;
+}
+
+async function copySelectedMessages() {
+  if (selectedMessageIds.value.length === 0) return;
+
+  const selectedMessages = messages.value
+    .filter((message) => selectedMessageIds.value.includes(message.id))
+    .sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+
+  const textToCopy = selectedMessages
+    .map((message) => {
+      const timestamp = new Date(message.createdAt).toLocaleString();
+      return `[${timestamp}] ${message.username}: ${message.text}`;
+    })
+    .join('\n');
+
+  if (!textToCopy) return;
+
+  let copied = false;
+
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(textToCopy);
+      copied = true;
+    } catch (error) {
+      console.warn('navigator.clipboard.writeText failed, fallback to execCommand', error);
+    }
+  }
+
+  if (!copied) {
+    copied = legacyCopyText(textToCopy);
+  }
+
+  if (!copied) {
+    showCopyToast('Не удалось скопировать сообщения');
+    return;
+  }
+
+  showCopyToast('Сообщения скопированы');
+}
+
+async function deleteSelectedForSelf() {
+  if (selectedMessageIds.value.length === 0) return;
+  await deleteMessages(selectedMessageIds.value, 'self');
+  clearSelection();
+}
+
+async function deleteSelectedForEveryone() {
+  if (selectedMessageIds.value.length === 0) return;
+  await deleteMessages(selectedMessageIds.value, 'everyone');
+  clearSelection();
+}
+
+async function handleJumpToMessage(messageId: string) {
+  if (!messageId || !activeConversationId.value) return;
+
+  const conversationId = activeConversationId.value;
+  const contextToken = conversationContextTokens.get(conversationId) || 0;
+  const existsInList = messages.value.some((m) => m.id === messageId);
+
+  if (existsInList) {
+    await nextTick();
+    const el = document.querySelector(`[data-message-id="${messageId}"]`) as HTMLElement | null;
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    return;
+  }
+
+  try {
+    const response = await api.get(
+      `/conversations/${conversationId}/messages/around/${messageId}`,
+      { params: { count: 30 } }
+    );
+
+    if (activeConversationId.value !== conversationId) return;
+    if ((conversationContextTokens.get(conversationId) || 0) !== contextToken) return;
+
+    const contextMessages = Array.isArray(response.data.messages) ? response.data.messages : [];
+    messages.value = mergeMessagesStable([], contextMessages);
+    hasMoreOlder.value = !!response.data.hasMoreOlder;
+    hasMoreNewer.value = !!response.data.hasMoreNewer;
+    isJumpMode.value = true;
+
+    await nextTick();
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-message-id="${messageId}"]`) as HTMLElement | null;
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  } catch (error) {
+    console.error('Failed to jump to message:', error);
+  }
+}
+
+async function openConversation(conversationId: string) {
+  const previousConversationId = activeConversationId.value;
+
+  // Save departing conversation state to cache before clearing it.
+  if (previousConversationId && previousConversationId !== conversationId) {
+    saveConversationToCache(previousConversationId);
+  }
+
+  // Bump the context token for this conversation so any in-flight
+  // loadOlderMessages / loadNewerMessages requests from a previous visit
+  // are invalidated and will not overwrite the fresh timeline state.
+  const newContextToken = (conversationContextTokens.get(conversationId) || 0) + 1;
+  conversationContextTokens.set(conversationId, newContextToken);
+
+  activeConversationId.value = conversationId;
+  // Explicitly assume the user is at the bottom when opening a conversation.
+  // ChatView's conversation-change watcher will call scrollToBottom() which
+  // confirms this via notifyBottomState → nearBottomChange.  Setting it here
+  // ensures the openConversation guard further below sees the correct value
+  // even in the brief window before ChatView's async watcher fires.
+  isChatNearBottom.value = true;
+  loadingOlder.value = false;
+  loadingNewer.value = false;
+  typingText.value = '';
+  replyToMessage.value = null;
+
+  // Restore cached state immediately for instant display, or start with empty slate.
+  // Jump-mode entries are not restored: the user should land at the latest messages.
+  const cached = conversationCache.get(conversationId);
+  if (cached && !cached.isJumpMode) {
+    messages.value = cached.messages;
+    hasMoreOlder.value = cached.hasMoreOlder;
+    hasMoreNewer.value = cached.hasMoreNewer;
+    isJumpMode.value = false;
+    pinnedMessage.value = cached.pinnedMessage;
+    // Restore unread state only when the anchor message is still present in the
+    // cached list.  If the message has since been evicted or the cache is
+    // otherwise inconsistent, reset to a clean unread-free state so the user
+    // never sees a stale or orphaned separator.
+    const anchorPresent =
+      cached.firstUnreadMessageId !== null &&
+      cached.messages.some((m) => m.id === cached.firstUnreadMessageId);
+    firstUnreadMessageId.value = anchorPresent ? cached.firstUnreadMessageId : null;
+    pendingNewMessagesCount.value = anchorPresent ? cached.pendingNewMessagesCount : 0;
+  } else {
+    messages.value = [];
+    hasMoreOlder.value = true;
+    hasMoreNewer.value = false;
+    isJumpMode.value = false;
+    pinnedMessage.value = null;
+    firstUnreadMessageId.value = null;
+    pendingNewMessagesCount.value = 0;
+  }
+
+  const socket = getSocket();
+  if (socket && previousConversationId && previousConversationId !== conversationId) {
+    socket.emit('conversation:leave', { conversationId: previousConversationId });
+  }
+
+  // Always fetch fresh messages (background refresh when cache was shown).
+  await loadMessages(conversationId);
+  if (activeConversationId.value !== conversationId) return;
+
+  // After a fresh load, the cached unread anchor may no longer be present in
+  // the new message list (the server returned a different window).  Clear the
+  // stale state so the pending-count button and separator stay consistent.
+  if (
+    firstUnreadMessageId.value !== null &&
+    !messages.value.some((m) => m.id === firstUnreadMessageId.value)
+  ) {
+    firstUnreadMessageId.value = null;
+    pendingNewMessagesCount.value = 0;
+    // Re-persist the corrected state so a quick switch-away/switch-back does
+    // not resurrect the now-invalid anchor.
+    saveConversationToCache(conversationId);
+  }
+
+  await loadParticipants(conversationId);
+  if (activeConversationId.value !== conversationId) return;
+
+  if (isChatNearBottom.value) {
+    // User is at the bottom — unread state is no longer meaningful.  Clear it
+    // explicitly before marking the conversation read so that the separator and
+    // pending count disappear as part of the same synchronous state update.
+    pendingNewMessagesCount.value = 0;
+    firstUnreadMessageId.value = null;
+    await markConversationRead(conversationId);
+    if (activeConversationId.value !== conversationId) return;
+
+    await loadConversations();
+    if (activeConversationId.value !== conversationId) return;
+  }
+
+  socket?.emit('conversation:join', { conversationId }, () => {});
+}
+
+async function createDirectConversation(userId: string) {
+  try {
+    const response = await api.post('/conversations/direct', { userId });
+    await loadConversations();
+    await openConversation(response.data.id);
+  } catch (error: any) {
+    errorText.value = error?.response?.data?.error || error?.message || 'Failed to create direct chat';
+  }
+}
+
+
+async function openDirectConversationByUsername(targetUsername: string) {
+  const normalized = targetUsername.trim();
+  if (!normalized) return;
+
+  if (normalized === currentUser.value?.username) {
+    return;
+  }
+
+  const existingDirect = conversations.value.find((conversation) => {
+    if (conversation.type !== 'direct') return false;
+    const title = (conversation.title || '').trim().toLowerCase();
+    return title === normalized.toLowerCase();
+  });
+
+  if (existingDirect) {
+    await openConversation(existingDirect.id);
+    return;
+  }
+
+  const user = users.value.find((item) => item.username.toLowerCase() === normalized.toLowerCase());
+  if (!user) {
+    errorText.value = `Пользователь ${normalized} не найден`;
+    return;
+  }
+
+  await createDirectConversation(user.id);
+}
+
+function openUserProfileByUsername(targetUsername: string) {
+  const normalized = targetUsername.trim();
+  if (!normalized) return;
+
+  const currentUsername = currentUser.value?.username?.toLowerCase() || '';
+  const foundUser =
+    users.value.find((item) => item.username.toLowerCase() === normalized.toLowerCase()) ||
+    (currentUsername === normalized.toLowerCase()
+      ? {
+          id: 'self',
+          username: currentUser.value!.username,
+          description: null,
+          avatarUrl: null,
+        }
+      : null);
+
+  if (!foundUser) {
+    errorText.value = `Пользователь ${normalized} не найден`;
+    return;
+  }
+
+  selectedUserProfile.value = foundUser;
+  isUserProfileModalOpen.value = true;
+}
+
+function closeUserProfileModal() {
+  isUserProfileModalOpen.value = false;
+  selectedUserProfile.value = null;
+}
+
+function handleOpenConversationInfo() {
+  if (!activeConversation.value) return;
+
+  if (activeConversation.value.type === 'direct' && directChatProfileUser.value) {
+    isDirectChatProfileOpen.value = true;
+    return;
+  }
+
+  isChatInfoModalOpen.value = true;
+}
+
+function closeDirectChatProfileModal() {
+  isDirectChatProfileOpen.value = false;
+}
+
+async function loadDirectRelationship() {
+  const user = directChatProfileUser.value;
+
+  if (!user) {
+    directRelationship.value = {
+      isBlockedByMe: false,
+      hasBlockedMe: false,
+    };
+    return;
+  }
+
+  try {
+    const response = await api.get(`/users/${user.id}/relationship`);
+    directRelationship.value = {
+      isBlockedByMe: !!response.data?.isBlockedByMe,
+      hasBlockedMe: !!response.data?.hasBlockedMe,
+    };
+  } catch {
+    directRelationship.value = {
+      isBlockedByMe: false,
+      hasBlockedMe: false,
+    };
+  }
+}
+
+function toggleMuteForDirectUser() {
+  const user = directChatProfileUser.value;
+  if (!user) return;
+
+  if (mutedDirectUserIds.value.includes(user.id)) {
+    mutedDirectUserIds.value = mutedDirectUserIds.value.filter((id) => id !== user.id);
+    errorText.value = `Звук для ${user.username} включён`;
+    return;
+  }
+
+  mutedDirectUserIds.value = [...mutedDirectUserIds.value, user.id];
+  errorText.value = `Чат ${user.username} заглушён`;
+}
+
+async function toggleBlockForDirectUser() {
+  const user = directChatProfileUser.value;
+  if (!user) return;
+
+  try {
+    if (directRelationship.value.isBlockedByMe) {
+      const response = await api.delete(`/users/${user.id}/block`);
+      directRelationship.value = {
+        isBlockedByMe: !!response.data?.isBlockedByMe,
+        hasBlockedMe: !!response.data?.hasBlockedMe,
+      };
+      errorText.value = `Пользователь ${user.username} разблокирован`;
+      return;
+    }
+
+    const confirmed = window.confirm(`Заблокировать пользователя ${user.username}?`);
+    if (!confirmed) return;
+
+    const response = await api.post(`/users/${user.id}/block`);
+    directRelationship.value = {
+      isBlockedByMe: !!response.data?.isBlockedByMe,
+      hasBlockedMe: !!response.data?.hasBlockedMe,
+    };
+    errorText.value = `Пользователь ${user.username} заблокирован`;
+  } catch (error: any) {
+    errorText.value = error?.response?.data?.error || 'Не удалось изменить статус блокировки';
+  }
+}
+
+async function shareDirectContact() {
+  const user = directChatProfileUser.value;
+  if (!user) return;
+
+  const value = `@${user.username}`;
+
+  try {
+    await navigator.clipboard.writeText(value);
+    errorText.value = `Скопировано: ${value}`;
+  } catch {
+    errorText.value = `Не удалось скопировать ${value}`;
+  }
+}
+
+function reportDirectUser() {
+  const user = directChatProfileUser.value;
+  if (!user) return;
+  errorText.value = `Жалоба на ${user.username} пока недоступна`;
+}
+
+function handleOpenDirectChatFullProfile(username: string) {
+  isDirectChatProfileOpen.value = false;
+  openUserProfileByUsername(username);
+}
+
+async function handleWriteMessageToUser(userId: string) {
+  closeUserProfileModal();
+
+  if (userId === 'self') return;
+
+  const targetUser = users.value.find((user) => user.id === userId);
+
+  if (!targetUser) {
+    errorText.value = 'Пользователь не найден';
+    return;
+  }
+
+  try {
+    const response = await api.get(`/users/${userId}/relationship`);
+    const relationship = {
+      isBlockedByMe: !!response.data?.isBlockedByMe,
+      hasBlockedMe: !!response.data?.hasBlockedMe,
+    };
+
+    if (relationship.isBlockedByMe) {
+      errorText.value = 'Вы заблокировали этого пользователя';
+      return;
+    }
+
+    if (relationship.hasBlockedMe) {
+      errorText.value = 'Вас заблокировали';
+      return;
+    }
+  } catch {
+    errorText.value = 'Не удалось проверить статус блокировки';
+    return;
+  }
+
+  const existingDirect = conversations.value.find((conversation) => {
+    return (
+      conversation.type === 'direct' &&
+      (conversation.title || '').trim().toLowerCase() === targetUser.username.toLowerCase()
+    );
+  });
+
+  if (existingDirect) {
+    await openConversation(existingDirect.id);
+    return;
+  }
+
+  await createDirectConversation(userId);
+}
+
+async function createGroup() {
+  try {
+    if (!groupTitle.value.trim()) {
+      errorText.value = 'Название группы обязательно';
+      return;
+    }
+
+    const response = await api.post('/conversations/group', {
+      title: groupTitle.value.trim(),
+      participantIds: selectedGroupUserIds.value,
+    });
+
+    groupTitle.value = '';
+    selectedGroupUserIds.value = [];
+    isCreateGroupModalOpen.value = false;
+
+    await loadConversations();
+    await openConversation(response.data.id);
+  } catch (error: any) {
+    errorText.value = error?.response?.data?.error || error?.message || 'Failed to create group';
+  }
+}
+
+async function createChannel() {
+  try {
+    if (!channelTitle.value.trim()) {
+      errorText.value = 'Название канала обязательно';
+      return;
+    }
+
+    const response = await api.post('/conversations/channel', {
+      title: channelTitle.value.trim(),
+    });
+
+    channelTitle.value = '';
+    isCreateChannelModalOpen.value = false;
+
+    await loadConversations();
+    await openConversation(response.data.id);
+  } catch (error: any) {
+    errorText.value = error?.response?.data?.error || error?.message || 'Failed to create channel';
+  }
+}
+
+
+async function forwardSelectedMessages() {
+  if (!activeConversationId.value || selectedMessageIds.value.length === 0) return;
+
+  forwardMessageIds.value = [...selectedMessageIds.value];
+  errorText.value = '';
+  forwardSearchQuery.value = '';
+  isForwardModalOpen.value = true;
+}
+
+async function submitForwardSelectedMessages(targetConversationId: string) {
+  if (!activeConversationId.value || forwardMessageIds.value.length === 0) return;
+  if (!targetConversationId) return;
+
+  const sourceConversationId = activeConversationId.value;
+  const isForwardToCurrentChat = targetConversationId === sourceConversationId;
+
+  try {
+    await api.post(`/conversations/${sourceConversationId}/messages/forward`, {
+      targetConversationId,
+      messageIds: forwardMessageIds.value,
+    });
+
+    forwardMessageIds.value = [];
+    clearSelection();
+    isForwardModalOpen.value = false;
+    forwardSearchQuery.value = '';
+
+    if (isForwardToCurrentChat) {
+      await loadMessages(sourceConversationId);
+      await nextTick();
+      scrollRevision.value += 1;
+      await loadConversations();
+    } else {
+      await loadConversations();
+      await openConversation(targetConversationId);
+    }
+  } catch (error: any) {
+    errorText.value = error?.response?.data?.error || error?.message || 'Не удалось переслать сообщения';
+  }
+}
+
+
+function handleStartEditingMessage(message: Message) {
+  editingMessage.value = message;
+  text.value = message.deletedForEveryoneAt ? '' : message.text;
+  replyToMessage.value = null;
+}
+
+function cancelEditingMessage() {
+  editingMessage.value = null;
+  text.value = '';
+  errorText.value = '';
+}
+
+async function saveEditedMessage() {
+  if (!activeConversationId.value || !editingMessage.value) return;
+  if (!text.value.trim()) return;
+
+  const socket = getSocket();
+  console.log('[sendMessage] socket', {
+    exists: !!socket,
+    activeConversationId: activeConversationId.value,
+    text: text.value,
+  });
+  if (!socket) return;
+
+  const conversationId = activeConversationId.value;
+  const messageId = editingMessage.value.id;
+  const messageText = text.value.trim();
+
+  socket.emit(
+    'message:edit',
+    {
+      conversationId,
+      messageId,
+      text: messageText,
+    },
+    async (ack: any) => {
+      if (!ack?.ok) {
+        errorText.value = ack?.error || 'Не удалось сохранить изменения';
+        return;
+      }
+
+      editingMessage.value = null;
+      text.value = '';
+      emitTypingStop();
+
+      if (activeConversationId.value !== conversationId) return;
+      await loadConversations();
+    }
+  );
+}
+
+async function sendMessage() {
+  console.log('[sendMessage]', {
+    activeConversationId: activeConversationId.value,
+    editingMessageId: editingMessage.value?.id || null,
+    text: text.value,
+    canSendMessage: canSendMessage.value,
+  });
+
+  if (editingMessage.value) {
+    await saveEditedMessage();
+    return;
+  }
+
+  if (!text.value.trim() || !activeConversationId.value) {
+    console.log('[sendMessage] guard blocked', {
+      text: text.value,
+      trimmed: text.value.trim(),
+      activeConversationId: activeConversationId.value,
+    });
+    return;
+  }
+
+  const socket = getSocket();
+  console.log('[sendMessage] socket check', {
+    exists: !!socket,
+    connected: socket?.connected,
+    activeConversationId: activeConversationId.value,
+    trimmedText: text.value.trim(),
+  });
+  if (!socket) {
+    errorText.value = 'Нет подключения к серверу';
+    return;
+  }
+
+  if (!socket.connected) {
+    errorText.value = 'Соединение с сервером потеряно. Попробуйте подождать или обновить страницу.';
+    socket.connect();
+    return;
+  }
+
+  const conversationId = activeConversationId.value;
+  const messageText = text.value.trim();
+  const replySnapshot = replyToMessage.value
+    ? {
+        id: replyToMessage.value.id,
+        userId: replyToMessage.value.userId,
+        username: replyToMessage.value.username,
+        text: replyToMessage.value.text,
+        createdAt: replyToMessage.value.createdAt,
+      }
+    : null;
+
+  isChatNearBottom.value = true;
+  pendingNewMessagesCount.value = 0;
+  firstUnreadMessageId.value = null;
+
+  const currentUsernameValue = currentUser.value?.username || 'You';
+  const { clientId, optimisticMessage } = createOptimisticMessage({
+    conversationId,
+    text: messageText,
+    username: currentUsernameValue,
+    replyTo: replySnapshot,
+  });
+
+  insertOptimisticMessage(optimisticMessage);
+
+  text.value = '';
+  emitTypingStop();
+  replyToMessage.value = null;
+
+  console.log('[send] before emit', {
+    connected: socket.connected,
+    conversationId,
+    clientId,
+    text: messageText,
+    replyToMessageId: replySnapshot?.id || null,
+  });
+
+  let ackHandled = false;
+  const ackTimeout = window.setTimeout(() => {
+    if (ackHandled) return;
+    console.warn('[send] ack timeout', { conversationId, clientId });
+    markOptimisticMessageFailed(optimisticMessage.id);
+    errorText.value = 'Сервер не подтвердил отправку сообщения';
+  }, 8000);
+
+  socket.emit(
+    'message:send',
+    {
+      clientId,
+      conversationId,
+      text: messageText,
+      replyToMessageId: replySnapshot?.id || null,
+    },
+    async (ack: any) => {
+      ackHandled = true;
+      window.clearTimeout(ackTimeout);
+      console.log('[send] ack received', ack);
+
+      if (!ack?.ok) {
+        markOptimisticMessageFailed(optimisticMessage.id);
+        errorText.value = ack?.error || 'Message send failed';
+        return;
+      }
+
+      if (ack?.message) {
+        reconcileOptimisticMessage({
+          ...ack.message,
+          clientId: ack.clientId || ack.message.clientId || clientId,
+        });
+      }
+
+      if (activeConversationId.value !== conversationId) return;
+
+      await markConversationRead(conversationId);
+
+      if (activeConversationId.value !== conversationId) return;
+      await loadConversations();
+    }
+  );
+}
+
+async function startApp() {
+  try {
+    errorText.value = '';
+
+    if (!token.value) {
+      const restored = await restoreSession();
+      saveSession(restored.token, { username: restored.user.username });
+    } else {
+      setToken(token.value);
+    }
+
+    mode.value = 'app';
+
+    await loadUsers();
+    await loadConversations();
+
+    const activeToken = token.value;
+    if (!activeToken) {
+      throw new Error('No access token available after session restore');
+    }
+
+    const socket = connectSocket(activeToken);
+
+    socket.off('users:online');
+    socket.off('message:new');
+    socket.off('message:read');
+    socket.off('message:edited');
+    socket.off('message:deleted');
+    socket.off('conversation:updated');
+    socket.off('typing:update');
+    socket.off('connect');
+    socket.off('connect_error');
+
+    socket.on('connect', () => {
+      const cid = activeConversationId.value;
+      if (cid) {
+        socket.emit('conversation:join', { conversationId: cid });
+        loadConversations();
+      }
+    });
+
+    socket.on('connect_error', async (error: any) => {
+      const message = String(error?.message || '');
+      console.error('[App] socket connect_error', message);
+
+      if (message !== 'Unauthorized') return;
+
+      try {
+        const restored = await restoreSession();
+        if (!restored?.token) {
+          clearSession();
+          return;
+        }
+
+        saveSession(restored.token, { username: restored.user.username });
+        const refreshedSocket = connectSocket(restored.token, true);
+
+        refreshedSocket.off('connect');
+        refreshedSocket.on('connect', () => {
+          const cid = activeConversationId.value;
+          if (cid) {
+            refreshedSocket.emit('conversation:join', { conversationId: cid });
+            loadConversations();
+          }
+        });
+      } catch {
+        clearSession();
+      }
+    });
+
+    socket.on('users:online', (payload: { userIds: string[] }) => {
+      onlineUserIds.value = payload.userIds || [];
+    });
+
+    socket.on('typing:update', (payload: { conversationId: string; username: string; isTyping: boolean }) => {
+      if (payload.conversationId !== activeConversationId.value) return;
+
+      if (payload.isTyping) {
+        typingText.value = `${payload.username} печатает...`;
+      } else {
+        typingText.value = '';
+      }
+    });
+
+    // Realtime read-receipt: update isRead on the current user's messages when
+    // another participant marks the conversation as read.
+    socket.on('message:edited', (payload: { conversationId: string; message: Message }) => {
+      if (!payload.conversationId || !payload.message) return;
+      if (payload.conversationId !== activeConversationId.value) return;
+
+      messages.value = mergeMessagesStable(messages.value, [payload.message]);
+
+      if (replyToMessage.value?.id === payload.message.id) {
+        replyToMessage.value = { ...replyToMessage.value, ...payload.message };
+      }
+
+      if (editingMessage.value?.id === payload.message.id) {
+        editingMessage.value = null;
+      }
+    });
+
+    socket.on('message:read', (payload: { conversationId: string; readAt: string }) => {
+      if (payload.conversationId !== activeConversationId.value) return;
+
+      const readAtMs = new Date(payload.readAt).getTime();
+      messages.value = messages.value.map((m) => {
+        if (m.username === currentUser.value?.username && !m.isRead) {
+          if (new Date(m.createdAt).getTime() <= readAtMs) {
+            return { ...m, isRead: true };
+          }
+        }
+        return m;
+      });
+    });
+
+    socket.on(
+      'message:deleted',
+      (payload: {
+        conversationId: string;
+        messageIds: string[];
+        mode: 'self' | 'everyone';
+        actorUserId: string;
+      }) => {
+        if (payload.conversationId !== activeConversationId.value) return;
+        if (!Array.isArray(payload.messageIds) || payload.messageIds.length === 0) return;
+
+        if (payload.mode === 'self') {
+          messages.value = messages.value.filter((message) => !payload.messageIds.includes(message.id));
+
+          if (pinnedMessage.value && payload.messageIds.includes(pinnedMessage.value.id)) {
+            pinnedMessage.value = null;
+          }
+          return;
+        }
+
+        messages.value = messages.value.map((message) => {
+          if (!payload.messageIds.includes(message.id)) return message;
+          return {
+            ...message,
+            text: 'Сообщение удалено',
+            replyTo: null,
+            deletedForEveryoneAt: new Date().toISOString(),
+          };
+        });
+
+        if (pinnedMessage.value && payload.messageIds.includes(pinnedMessage.value.id)) {
+          pinnedMessage.value = {
+            ...pinnedMessage.value,
+            text: 'Сообщение удалено',
+            replyTo: null,
+            deletedForEveryoneAt: new Date().toISOString(),
+          };
+        }
+      }
+    );
+
+    socket.on('message:new', async (payload: { message: Message }) => {
+      const isActiveChatMessage = payload.message.conversationId === activeConversationId.value;
+
+      if (isActiveChatMessage) {
+        await appendIncomingMessage(payload.message);
+      }
+
+      await loadConversations();
+    });
+
+    socket.on('conversation:updated', async () => {
+      await loadConversations();
+    });
+
+    // Do not auto-open any conversation on page load/refresh.
+    // The user must explicitly click a conversation in the sidebar.
+  } catch (error: any) {
+    if (error?.response?.status === 401) {
+      logout();
+      return;
+    }
+
+    errorText.value = error?.response?.data?.error || error?.message || 'Failed to start app';
+    mode.value = 'auth';
+  }
+}
+
+async function logout() {
+  emitTypingStop();
+
+  try {
+    await logoutRequest();
+  } catch {}
+
+  clearSession();
+  disconnectSocket();
+
+  mode.value = 'auth';
+  users.value = [];
+  conversations.value = [];
+  activeConversationId.value = null;
+  messages.value = [];
+  participants.value = [];
+  text.value = '';
+  loadingOlder.value = false;
+  hasMoreOlder.value = true;
+  hasMoreNewer.value = false;
+  loadingNewer.value = false;
+  isJumpMode.value = false;
+  isChatNearBottom.value = true;
+  pendingNewMessagesCount.value = 0;
+  firstUnreadMessageId.value = null;
+  replyToMessage.value = null;
+  pinnedMessage.value = null;
+  onlineUserIds.value = [];
+  typingText.value = '';
+  searchQuery.value = '';
+  errorText.value = '';
+  groupTitle.value = '';
+  selectedGroupUserIds.value = [];
+  channelTitle.value = '';
+  isMenuOpen.value = false;
+  isChatInfoModalOpen.value = false;
+  isCreateGroupModalOpen.value = false;
+  isCreateChannelModalOpen.value = false;
+  isForwardModalOpen.value = false;
+  forwardSearchQuery.value = '';
+  conversationCache.clear();
+  conversationLoadTokens.clear();
+  conversationContextTokens.clear();
+}
+
+startApp().catch((error: any) => {
+  if (error?.response?.status === 401) {
+    logout();
+    return;
+  }
+
+  errorText.value = error?.response?.data?.error || error?.message || 'Failed to restore session';
+  mode.value = 'auth';
+});
+</script>
+
+<template>
+  <div style="height: 100%;">
+    <template v-if="mode === 'auth'">
+      <div
+        style="
+          min-height: 100vh;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: linear-gradient(135deg, #17212b, #0e1621);
+        "
+      >
+        <div
+          style="
+            width: 360px;
+            background: #17212b;
+            border: 1px solid #22303d;
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 20px 60px rgba(0,0,0,.35);
+          "
+        >
+          <h1 style="margin: 0 0 18px 0; font-size: 28px;">MyMessage</h1>
+          <p style="margin: 0 0 18px 0; color: #8ea2b5;">Telegram-like messenger prototype</p>
+
+          <div
+            v-if="errorText"
+            style="background: #3a1f26; color: #ffb7c5; padding: 10px; margin-bottom: 16px; border-radius: 10px;"
+          >
+            {{ errorText }}
+          </div>
+
+          <div style="display: grid; gap: 12px;">
+            <input v-model="username" class="tm-input" placeholder="Username" />
+            <input v-model="password" class="tm-input" type="password" placeholder="Password" />
+
+            <div style="display: flex; gap: 10px;">
+              <button class="tm-primary" style="flex: 1;" @click="register">Register</button>
+              <button class="tm-secondary" style="flex: 1;" @click="login">Login</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <template v-else>
+      <div class="tm-shell tm-shell--wide">
+        <SidebarChats
+          :users="users"
+          :conversations="filteredConversations"
+          :active-conversation-id="activeConversationId"
+          :search-query="searchQuery"
+          :unread-map="unreadMap"
+          :online-user-ids="onlineUserIds"
+          @menu="isMenuOpen = true"
+          @search="searchQuery = $event"
+          @open-direct="createDirectConversation"
+          @open-conversation="openConversation"
+        />
+
+        <ChatView
+          :current-username="currentUser?.username || ''"
+          :active-conversation="activeConversation"
+          :messages="messages"
+          :text="text"
+          :current-user="currentUser"
+          :can-send-message="canSendMessage"
+          :send-blocked-reason="sendBlockedReason"
+          :typing-text="typingText"
+          :loading-older="loadingOlder"
+          :has-more-older="hasMoreOlder"
+          :has-more-newer="hasMoreNewer"
+          :loading-newer="loadingNewer"
+          :is-jump-mode="isJumpMode"
+          :pending-new-messages-count="pendingNewMessagesCount"
+          :first-unread-message-id="firstUnreadMessageId"
+          :reply-to-message="replyToMessage"
+          :editing-message="editingMessage"
+          :pinned-message="pinnedMessage"
+          :scroll-revision="scrollRevision"
+          :selected-message-ids="selectedMessageIds"
+          :is-selection-mode="isSelectionMode"
+          @open-info="handleOpenConversationInfo"
+          @update-text="text = $event"
+          @send="sendMessage"
+          @load-older="loadOlderMessages"
+          @load-newer="loadNewerMessages"
+          @near-bottom-change="handleNearBottomChange"
+          @reach-latest="handleReachLatest"
+          @jump-to-latest="handleJumpToLatest"
+          @reply-to-message="handleReplyToMessage"
+          @clear-reply="handleClearReply"
+          @cancel-edit-message="cancelEditingMessage"
+          @pin-message="handlePinMessage"
+          @start-edit-message="handleStartEditingMessage"
+          @jump-to-message="handleJumpToMessage"
+          @delete-for-self="handleDeleteForSelf"
+          @delete-for-everyone="handleDeleteForEveryone"
+          @enter-selection-mode="enterSelectionMode"
+          @toggle-message-selection="toggleMessageSelection"
+          @delete-selected-for-self="deleteSelectedForSelf"
+          @delete-selected-for-everyone="deleteSelectedForEveryone"
+          @clear-selection="clearSelection"
+          @select-visible-messages="selectVisibleMessages"
+          @copy-selected-messages="copySelectedMessages"
+          @forward-selected-messages="forwardSelectedMessages"
+          @open-user-profile="openUserProfileByUsername"
+          @open-forwarded-author="openDirectConversationByUsername"
+        />
+      </div>
+
+      <div
+        v-if="isMenuOpen || isDirectChatProfileOpen || isChatInfoModalOpen || isCreateGroupModalOpen || isCreateChannelModalOpen || isForwardModalOpen"
+        class="tm-overlay"
+        @click="closeTopOverlay"
+      />
+
+      <MainDrawer
+        v-if="isMenuOpen"
+        :current-username="currentUser?.username || 'User'"
+        @close="isMenuOpen = false"
+        @create-group="isMenuOpen = false; isCreateGroupModalOpen = true"
+        @create-channel="isMenuOpen = false; isCreateChannelModalOpen = true"
+        @logout="logout"
+      />
+
+      <CreateGroupModal
+        v-if="isCreateGroupModalOpen"
+        :users="users"
+        :title="groupTitle"
+        :selected-user-ids="selectedGroupUserIds"
+        @close="isCreateGroupModalOpen = false"
+        @update-title="groupTitle = $event"
+        @toggle-user="toggleGroupUser"
+        @submit="createGroup"
+      />
+
+      <CreateChannelModal
+        v-if="isCreateChannelModalOpen"
+        :title="channelTitle"
+        @close="isCreateChannelModalOpen = false"
+        @update-title="channelTitle = $event"
+        @submit="createChannel"
+      />
+
+      <DirectChatProfileModal
+        :open="isDirectChatProfileOpen"
+        :user="directChatProfileUser"
+        :is-muted="isDirectChatMuted"
+        :is-blocked-by-me="isDirectChatBlockedByMe"
+        :has-blocked-me="hasDirectChatBlockedMe"
+        :links-count="directChatLinksCount"
+        :shared-groups-count="directChatSharedGroupsCount"
+        @close="closeDirectChatProfileModal"
+        @write-message="handleWriteMessageToUser"
+        @open-profile="handleOpenDirectChatFullProfile"
+        @toggle-mute="toggleMuteForDirectUser"
+        @toggle-block="toggleBlockForDirectUser"
+        @share-contact="shareDirectContact"
+        @report-user="reportDirectUser"
+      />
+
+      <ChatInfoModal
+        v-if="isChatInfoModalOpen"
+        :active-conversation="activeConversation"
+        :participants="participants"
+        @close="isChatInfoModalOpen = false"
+      />
+
+      <ForwardMessagesModal
+        v-if="isForwardModalOpen"
+        :conversations="forwardTargetConversations"
+        :search-query="forwardSearchQuery"
+        :active-conversation-id="activeConversationId"
+        @close="isForwardModalOpen = false; forwardSearchQuery = ''; forwardMessageIds = []"
+        @update-search-query="forwardSearchQuery = $event"
+        @submit="submitForwardSelectedMessages"
+      />
+
+      <UserProfileModal
+        :open="isUserProfileModalOpen"
+        :user="
+          selectedUserProfile
+            ? {
+                ...selectedUserProfile,
+                isOnline:
+                  selectedUserProfile.id === 'self'
+                    ? true
+                    : onlineUserIds.includes(selectedUserProfile.id),
+              }
+            : null
+        "
+        :is-current-user="selectedUserProfile?.username === currentUser?.username"
+        @close="closeUserProfileModal"
+        @write-message="handleWriteMessageToUser"
+      />
+
+      <transition name="tm-copy-toast-fade">
+        <div v-if="copyToastVisible" class="tm-copy-toast">
+          {{ copyToastText }}
+        </div>
+      </transition>
+    </template>
+  </div>
+</template>

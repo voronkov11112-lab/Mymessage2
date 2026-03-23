@@ -1,0 +1,224 @@
+<script setup lang="ts">
+
+type Conversation = {
+
+  id: string;
+
+  type: 'direct' | 'group' | 'channel';
+
+  title: string | null;
+
+};
+
+
+
+const props = defineProps<{
+
+  activeConversation: Conversation | null;
+
+}>();
+
+
+
+const emit = defineEmits<{
+
+  back: [];
+
+  openInfo: [];
+
+}>();
+
+
+
+function titleLabel() {
+
+  if (!props.activeConversation) return 'Чаты';
+
+  return props.activeConversation.title || 'Без названия';
+
+}
+
+
+
+function subtitleLabel() {
+
+  if (!props.activeConversation) return '';
+
+  if (props.activeConversation.type === 'direct') return 'Личный чат';
+
+  if (props.activeConversation.type === 'group') return 'Группа';
+
+  return 'Канал';
+
+}
+
+</script>
+
+
+
+<template>
+
+  <div class="tm-mobile-chat-header">
+
+    <button
+
+      type="button"
+
+      class="tm-mobile-chat-header__back"
+
+      @click="emit('back')"
+
+      aria-label="Назад"
+
+    >
+
+      ←
+
+    </button>
+
+
+
+    <div class="tm-mobile-chat-header__meta">
+
+      <div class="tm-mobile-chat-header__title">{{ titleLabel() }}</div>
+
+      <div class="tm-mobile-chat-header__subtitle">{{ subtitleLabel() }}</div>
+
+    </div>
+
+
+
+    <button
+
+      type="button"
+
+      class="tm-mobile-chat-header__info"
+
+      @click="emit('openInfo')"
+
+      aria-label="Информация"
+
+    >
+
+      ⓘ
+
+    </button>
+
+  </div>
+
+</template>
+
+
+
+<style scoped>
+
+.tm-mobile-chat-header {
+
+  position: sticky;
+
+  top: 0;
+
+  z-index: 50;
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 12px;
+
+  margin: 0 10px;
+
+  padding: calc(10px + env(safe-area-inset-top)) 12px 12px;
+
+  background: linear-gradient(180deg, #13283f 0%, #0f2237 100%);
+
+  border-bottom-left-radius: 24px;
+
+  border-bottom-right-radius: 24px;
+
+  box-shadow:
+
+    0 14px 30px rgba(7, 20, 34, 0.26),
+
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+}
+
+
+
+.tm-mobile-chat-header__back,
+
+.tm-mobile-chat-header__info {
+
+  width: 36px;
+
+  height: 36px;
+
+  border: none;
+
+  border-radius: 999px;
+
+  background: rgba(255, 255, 255, 0.14);
+
+  color: #ffffff;
+
+  font-size: 18px;
+
+  font-weight: 700;
+
+  cursor: pointer;
+
+  flex: 0 0 auto;
+
+  display: grid;
+
+  place-items: center;
+
+}
+
+
+
+.tm-mobile-chat-header__meta {
+
+  min-width: 0;
+
+  flex: 1 1 auto;
+
+}
+
+
+
+.tm-mobile-chat-header__title {
+
+  font-size: 16px;
+
+  line-height: 1.1;
+
+  font-weight: 800;
+
+  color: #ffffff;
+
+  white-space: nowrap;
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+}
+
+
+
+.tm-mobile-chat-header__subtitle {
+
+  margin-top: 3px;
+
+  font-size: 12px;
+
+  line-height: 1.2;
+
+  color: rgba(255, 255, 255, 0.78);
+
+}
+
+</style>
+

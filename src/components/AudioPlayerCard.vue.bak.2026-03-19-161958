@@ -1,0 +1,442 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
+
+const props = withDefaults(defineProps<{
+  src: string;
+  title?: string;
+  subtitle?: string;
+  compact?: boolean;
+}>(), {
+  title: 'Аудио',
+  subtitle: '',
+  compact: false,
+});
+
+const audioEl = ref<HTMLAudioElement | null>(null);
+const isPlaying = ref(false);
+const isMuted = ref(false);
+const duration = ref(0);
+const currentTime = ref(0);
+const volume = ref(0.7);
+const playbackRate = ref(1);
+
+function fmtTime(value: number) {
+  if (!Number.isFinite(value) || value < 0) return '0:00';
+  const total = Math.floor(value);
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+const progressPercent = computed(() => {
+  if (!duration.value) return 0;
+  return Math.min(100, Math.max(0, (currentTime.value / duration.value) * 100));
+});
+
+const volumePercent = computed(() => Math.round(volume.value * 100));
+
+function syncFromAudio() {
+  const el = audioEl.value;
+  if (!el) return;
+  duration.value = Number.isFinite(el.duration) ? el.duration : 0;
+  currentTime.value = el.currentTime || 0;
+  isPlaying.value = !el.paused && !el.ended;
+  isMuted.value = el.muted;
+  volume.value = el.volume;
+  playbackRate.value = el.playbackRate || 1;
+}
+
+async function togglePlay() {
+  const el = audioEl.value;
+  if (!el) return;
+
+  try {
+    if (el.paused) {
+      await el.play();
+    } else {
+      el.pause();
+    }
+    syncFromAudio();
+  } catch (error) {
+    console.error('audio play toggle failed', error);
+  }
+}
+
+function seek(event: Event) {
+  const el = audioEl.value;
+  if (!el || !duration.value) return;
+
+  const target = event.target as HTMLInputElement;
+  const percent = Number(target.value || 0);
+  el.currentTime = (duration.value * percent) / 100;
+  syncFromAudio();
+}
+
+function toggleMute() {
+  const el = audioEl.value;
+  if (!el) return;
+  el.muted = !el.muted;
+  syncFromAudio();
+}
+
+function setVolume(event: Event) {
+  const el = audioEl.value;
+  if (!el) return;
+
+  const target = event.target as HTMLInputElement;
+  const next = Math.min(1, Math.max(0, Number(target.value || 0) / 100));
+  el.volume = next;
+  el.muted = next === 0;
+  syncFromAudio();
+}
+
+function cycleSpeed() {
+  const el = audioEl.value;
+  if (!el) return;
+
+  const order = [1, 1.25, 1.5, 2];
+  const currentIndex = order.findIndex((v) => Math.abs(v - (el.playbackRate || 1)) < 0.001);
+  const next = order[(currentIndex + 1) % order.length];
+  el.playbackRate = next;
+  syncFromAudio();
+}
+
+function restartAudio() {
+  const el = audioEl.value;
+  if (!el) return;
+  el.currentTime = 0;
+  syncFromAudio();
+}
+
+function handleEnded() {
+  syncFromAudio();
+}
+
+watch(
+  () => props.src,
+  () => {
+    const el = audioEl.value;
+    if (!el) return;
+    el.pause();
+    el.currentTime = 0;
+    syncFromAudio();
+  }
+);
+
+onBeforeUnmount(() => {
+  const el = audioEl.value;
+  if (!el) return;
+  el.pause();
+});
+
+function detectArtistFromTitle(title: string): string {
+  const value = (title || '').trim();
+  if (!value) return '';
+
+  for (const sep of [' - ', ' — ', ' – ']) {
+    if (value.includes(sep)) {
+      const artist = value.split(sep)[0].trim();
+      if (artist) return artist;
+    }
+  }
+
+  return '';
+}
+
+const titleLabel = computed(() => props.title || 'Аудио');
+const subtitleLabel = computed(() => {
+  const explicit = (props.subtitle || '').trim();
+  if (explicit) return explicit;
+
+  const detected = detectArtistFromTitle(props.title || '');
+  return detected || 'Неизвестно';
+});
+</script>
+
+<template>
+  <div :class="['tm-audio-card', compact ? 'tm-audio-card--compact' : '']">
+    <audio
+      ref="audioEl"
+      :src="src"
+      preload="metadata"
+      @loadedmetadata="syncFromAudio"
+      @timeupdate="syncFromAudio"
+      @durationchange="syncFromAudio"
+      @play="syncFromAudio"
+      @pause="syncFromAudio"
+      @volumechange="syncFromAudio"
+      @ratechange="syncFromAudio"
+      @ended="handleEnded"
+    />
+
+    <div class="tm-audio-card__header">
+      <div class="tm-audio-card__icon">🎵</div>
+      <div class="tm-audio-card__meta">
+        <div class="tm-audio-card__title">{{ titleLabel }}</div>
+        <div class="tm-audio-card__subtitle">{{ subtitleLabel }}</div>
+      </div>
+    </div>
+
+    <div class="tm-audio-card__main">
+      <button type="button" class="tm-audio-card__play" @click="togglePlay">
+        {{ isPlaying ? '❚❚' : '▶' }}
+      </button>
+
+      <div class="tm-audio-card__timeline-wrap">
+        <div class="tm-audio-card__time">{{ fmtTime(currentTime) }} / {{ fmtTime(duration) }}</div>
+        <input
+          class="tm-audio-card__timeline"
+          type="range"
+          min="0"
+          max="100"
+          step="0.1"
+          :value="progressPercent"
+          @input="seek"
+        />
+      </div>
+    </div>
+
+    <div class="tm-audio-card__controls">
+      <button type="button" class="tm-audio-card__control-btn" @click="toggleMute">
+        {{ isMuted || volumePercent === 0 ? '🔇' : '🔊' }}
+      </button>
+
+      <input
+        class="tm-audio-card__volume"
+        type="range"
+        min="0"
+        max="100"
+        step="1"
+        :value="volumePercent"
+        @input="setVolume"
+      />
+
+      <div class="tm-audio-card__volume-text">{{ volumePercent }}%</div>
+    </div>
+
+    <div class="tm-audio-card__footer">
+      <button type="button" class="tm-audio-card__pill" @click="cycleSpeed">
+        {{ playbackRate }}x
+      </button>
+
+      <button type="button" class="tm-audio-card__pill" @click="restartAudio">
+        Повтор
+      </button>
+
+      <button type="button" class="tm-audio-card__pill" @click="toggleMute">
+        {{ isMuted || volumePercent === 0 ? 'Включить звук' : 'Выключить звук' }}
+      </button>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.tm-audio-card {
+  width: min(340px, 72vw);
+  padding: 12px 14px 14px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #1f2740 0%, #2b3454 100%);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.24);
+  color: #eef3ff;
+}
+
+.tm-audio-card--compact {
+  width: 180px;
+  padding: 10px 11px 11px;
+  border-radius: 14px;
+}
+
+.tm-audio-card__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.tm-audio-card--compact .tm-audio-card__header {
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.tm-audio-card__icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(180deg, #7b63ff 0%, #6b56f7 100%);
+  box-shadow: 0 8px 18px rgba(107, 86, 247, 0.24);
+  font-size: 18px;
+  flex: 0 0 auto;
+}
+
+.tm-audio-card--compact .tm-audio-card__icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  font-size: 14px;
+}
+
+.tm-audio-card__meta {
+  min-width: 0;
+}
+
+.tm-audio-card__title {
+  font-size: 18px;
+  line-height: 1.1;
+  font-weight: 700;
+  color: #ffffff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tm-audio-card--compact .tm-audio-card__title {
+  font-size: 13px;
+}
+
+.tm-audio-card__subtitle {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #c9d8ff;
+}
+
+.tm-audio-card--compact .tm-audio-card__subtitle {
+  margin-top: 1px;
+  font-size: 10px;
+}
+
+.tm-audio-card__main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tm-audio-card--compact .tm-audio-card__main {
+  gap: 8px;
+}
+
+.tm-audio-card__play {
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #7b63ff 0%, #6b56f7 100%);
+  color: #ffffff;
+  font-size: 16px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.tm-audio-card--compact .tm-audio-card__play {
+  width: 32px;
+  height: 32px;
+  font-size: 13px;
+}
+
+.tm-audio-card__timeline-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tm-audio-card__time {
+  font-size: 12px;
+  font-weight: 600;
+  color: #dfe8ff;
+  margin-bottom: 5px;
+}
+
+.tm-audio-card--compact .tm-audio-card__time {
+  font-size: 10px;
+  margin-bottom: 4px;
+}
+
+.tm-audio-card__timeline,
+.tm-audio-card__volume {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  outline: none;
+}
+
+.tm-audio-card__timeline::-webkit-slider-thumb,
+.tm-audio-card__volume::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #b9fff0 0%, #7b63ff 100%);
+  cursor: pointer;
+}
+
+.tm-audio-card__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.tm-audio-card--compact .tm-audio-card__controls {
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.tm-audio-card__control-btn {
+  border: none;
+  background: transparent;
+  color: #ffffff;
+  font-size: 16px;
+  cursor: pointer;
+  flex: 0 0 auto;
+  padding: 0;
+}
+
+.tm-audio-card--compact .tm-audio-card__control-btn {
+  font-size: 13px;
+}
+
+.tm-audio-card__volume-text {
+  font-size: 11px;
+  font-weight: 600;
+  color: #dfe8ff;
+  min-width: 34px;
+  text-align: right;
+}
+
+.tm-audio-card--compact .tm-audio-card__volume-text {
+  font-size: 10px;
+  min-width: 30px;
+}
+
+.tm-audio-card__footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.tm-audio-card--compact .tm-audio-card__footer {
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.tm-audio-card__pill {
+  border: none;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #d8e4ff;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.tm-audio-card--compact .tm-audio-card__pill {
+  padding: 5px 8px;
+  font-size: 10px;
+}
+</style>

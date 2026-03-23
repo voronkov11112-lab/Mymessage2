@@ -1,0 +1,222 @@
+<script setup lang="ts">
+type Conversation = {
+  id: string;
+  type: 'direct' | 'group' | 'channel';
+  title: string | null;
+  createdAt: string;
+  lastMessageText: string | null;
+  lastMessageCreatedAt: string | null;
+  unreadCount: number;
+};
+
+const props = defineProps<{
+  conversations: Conversation[];
+  searchQuery: string;
+  activeConversationId?: string | null;
+}>();
+
+const emit = defineEmits<{
+  close: [];
+  updateSearchQuery: [value: string];
+  submit: [conversationId: string];
+}>();
+
+function label(conversation: Conversation) {
+  return conversation.title || (conversation.type === 'direct' ? 'Личный чат' : typeLabel(conversation.type));
+}
+
+function typeLabel(type: Conversation['type']) {
+  switch (type) {
+    case 'direct':
+      return 'Личный чат';
+    case 'group':
+      return 'Группа';
+    case 'channel':
+      return 'Канал';
+    default:
+      return type;
+  }
+}
+
+function metaLabel(conversation: Conversation) {
+  const base = typeLabel(conversation.type);
+  const preview = conversation.lastMessageText?.trim() || 'Без сообщений';
+  return `${base} · ${preview}`;
+}
+
+function isCurrentConversation(conversationId: string) {
+  return props.activeConversationId === conversationId;
+}
+</script>
+
+<template>
+  <div class="tm-modal tm-forward-modal" @click.stop>
+    <div class="tm-modal__header">
+      <div class="tm-forward-modal__heading">
+        <h3 class="tm-modal__title">Переслать сообщения</h3>
+        <p class="tm-forward-modal__subtitle">Выберите чат, куда нужно переслать сообщения</p>
+      </div>
+
+      <button class="tm-modal__close" @click="emit('close')">✕</button>
+    </div>
+
+    <input
+      class="tm-input tm-forward-modal__search"
+      type="text"
+      placeholder="Поиск чата..."
+      :value="props.searchQuery"
+      @input="emit('updateSearchQuery', ($event.target as HTMLInputElement).value)"
+    />
+
+    <div class="tm-forward-modal__list">
+      <button
+        v-for="conversation in props.conversations"
+        :key="conversation.id"
+        class="tm-forward-modal__item"
+        :class="{ 'tm-forward-modal__item--current': isCurrentConversation(conversation.id) }"
+        @click="emit('submit', conversation.id)"
+      >
+        <div class="tm-forward-modal__row">
+          <div class="tm-forward-modal__title">
+            {{ label(conversation) }}
+          </div>
+
+          <span
+            v-if="isCurrentConversation(conversation.id)"
+            class="tm-forward-modal__badge"
+          >
+            Текущий чат
+          </span>
+        </div>
+
+        <div class="tm-forward-modal__meta">
+          {{ metaLabel(conversation) }}
+        </div>
+      </button>
+
+      <div v-if="props.conversations.length === 0" class="tm-forward-modal__empty">
+        <div class="tm-forward-modal__empty-title">Ничего не найдено</div>
+        <div class="tm-forward-modal__empty-text">
+          Попробуйте изменить поисковый запрос
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.tm-forward-modal {
+  width: min(100%, 650px);
+}
+
+.tm-forward-modal__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tm-forward-modal__subtitle {
+  margin: 0;
+  font-size: 14px;
+  color: rgba(186, 204, 224, 0.72);
+}
+
+.tm-forward-modal__search {
+  margin-top: 6px;
+}
+
+.tm-forward-modal__list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.tm-forward-modal__item {
+  width: 100%;
+  border: 1px solid rgba(86, 119, 163, 0.28);
+  background: rgba(31, 43, 57, 0.96);
+  border-radius: 18px;
+  padding: 16px 18px;
+  text-align: left;
+  color: #e8eef5;
+  cursor: pointer;
+  transition:
+    transform 0.16s ease,
+    border-color 0.16s ease,
+    background 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.tm-forward-modal__item:hover {
+  transform: translateY(-1px);
+  border-color: rgba(91, 156, 255, 0.5);
+  background: rgba(36, 50, 67, 0.98);
+  box-shadow: 0 14px 30px rgba(5, 15, 26, 0.24);
+}
+
+.tm-forward-modal__item--current {
+  border-color: rgba(91, 156, 255, 0.6);
+  background: rgba(38, 52, 72, 0.98);
+}
+
+.tm-forward-modal__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tm-forward-modal__title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #f2f7fb;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tm-forward-modal__badge {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #9ec5ff;
+  background: rgba(68, 124, 201, 0.18);
+  border: 1px solid rgba(91, 156, 255, 0.26);
+}
+
+.tm-forward-modal__meta {
+  margin-top: 8px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: rgba(186, 204, 224, 0.82);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tm-forward-modal__empty {
+  border: 1px dashed rgba(86, 119, 163, 0.3);
+  border-radius: 18px;
+  padding: 24px 18px;
+  text-align: center;
+  background: rgba(25, 35, 48, 0.55);
+}
+
+.tm-forward-modal__empty-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #e8eef5;
+}
+
+.tm-forward-modal__empty-text {
+  margin-top: 6px;
+  font-size: 14px;
+  color: rgba(186, 204, 224, 0.72);
+}
+</style>

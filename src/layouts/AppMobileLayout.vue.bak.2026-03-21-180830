@@ -1,0 +1,178 @@
+<script setup lang="ts">
+
+defineProps<{
+
+  mode: 'auth' | 'app';
+
+}>();
+
+</script>
+
+
+
+<template>
+
+  <div class="app-mobile-layout">
+
+    <slot />
+
+  </div>
+
+</template>
+
+
+
+<style scoped>
+
+.app-mobile-layout {
+
+  width: 100%;
+
+  min-height: 100vh;
+
+}
+
+
+
+:deep(.tm-shell),
+
+:deep(.tm-shell.tm-shell--wide) {
+
+  width: 100%;
+
+  min-height: 100vh;
+
+}
+
+
+
+:deep(.tm-shell.tm-shell--wide) {
+
+  display: block !important;
+
+}
+
+
+
+:deep(.tm-sidebar),
+
+:deep(.tm-sidebar-chats),
+
+:deep(.tm-left-panel) {
+
+  width: 100% !important;
+
+  max-width: 100% !important;
+
+  min-width: 0 !important;
+
+}
+
+
+
+:deep(.tm-chat-view),
+
+:deep(.tm-chat-panel),
+
+:deep(.tm-main-panel) {
+
+  width: 100% !important;
+
+  max-width: 100% !important;
+
+  min-width: 0 !important;
+
+}
+
+
+
+:deep(.tm-right-panel),
+
+:deep(.tm-info-panel) {
+
+  width: 100% !important;
+
+  max-width: 100% !important;
+
+}
+
+
+
+:deep(.tm-shell .tm-sidebar),
+
+:deep(.tm-shell .tm-chat-view),
+
+:deep(.tm-shell .tm-right-panel) {
+
+  border-radius: 0 !important;
+
+}
+
+
+
+:deep(.tm-shell) {
+
+  padding: 0 !important;
+
+}
+
+
+
+:deep(.tm-composer),
+
+:deep(.tm-composer-telegramish) {
+
+  padding-bottom: max(12px, env(safe-area-inset-bottom)) !important;
+
+}
+
+
+
+:deep(.tm-input),
+
+:deep(.tm-primary),
+
+:deep(.tm-icon-btn) {
+
+  min-height: 44px;
+
+}
+
+
+
+:deep(.tm-message-card) {
+
+  max-width: calc(100vw - 84px) !important;
+
+}
+
+
+
+:deep(.tm-attachment-image),
+
+:deep(.tm-video-preview),
+
+:deep(.tm-video-preview__media) {
+
+  max-width: min(82vw, 420px) !important;
+
+}
+
+
+
+:deep(.tm-media-grid) {
+
+  max-width: min(88vw, 440px) !important;
+
+}
+
+
+
+:deep(.tm-context-menu) {
+
+  max-width: calc(100vw - 16px);
+
+}
+
+</style>
+

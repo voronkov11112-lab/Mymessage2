@@ -1,0 +1,1499 @@
+<script setup lang="ts">
+
+defineProps<{
+
+  mode: 'auth' | 'app';
+
+}>();
+
+</script>
+
+
+
+<template>
+
+  <div class="app-mobile-layout">
+
+    <slot />
+
+  </div>
+
+</template>
+
+
+
+<style scoped>
+
+.app-mobile-layout {
+
+  width: 100%;
+
+  min-height: 100vh;
+
+  min-height: 100dvh;
+
+  height: 100dvh;
+
+  display: flex;
+
+  flex-direction: column;
+
+  overflow: hidden;
+
+  background: #dfe4e8;
+
+}
+
+
+
+:deep(html),
+
+:deep(body) {
+
+  height: 100%;
+
+}
+
+
+
+:deep(.tm-shell),
+
+:deep(.tm-shell.tm-shell--wide) {
+
+  width: 100%;
+
+  min-height: 100% !important;
+
+  height: 100% !important;
+
+  display: flex !important;
+
+  flex-direction: column !important;
+
+  background: #dfe4e8 !important;
+
+}
+
+
+
+:deep(.tm-shell) {
+
+  padding: 0 !important;
+
+  overflow: hidden !important;
+
+}
+
+
+
+:deep(.tm-sidebar),
+
+:deep(.tm-sidebar-chats),
+
+:deep(.tm-left-panel),
+
+:deep(.tm-chat-view),
+
+:deep(.tm-chat-panel),
+
+:deep(.tm-main-panel),
+
+:deep(.tm-right-panel),
+
+:deep(.tm-info-panel) {
+
+  width: 100% !important;
+
+  max-width: 100% !important;
+
+  min-width: 0 !important;
+
+  border-radius: 0 !important;
+
+}
+
+
+
+:deep(.tm-chat-view),
+
+:deep(.tm-chat-panel),
+
+:deep(.tm-main-panel) {
+
+  min-height: 0 !important;
+
+  height: auto !important;
+
+  flex: 1 1 auto !important;
+
+  background: #dfe4e8 !important;
+
+  display: flex !important;
+
+  flex-direction: column !important;
+
+  overflow: hidden !important;
+
+}
+
+
+
+:deep(.tm-chat-header),
+
+:deep(.tm-chat-topbar),
+
+:deep(.tm-chat-titlebar),
+
+:deep(.tm-chat-toolbar),
+
+:deep(.tm-chat-head),
+
+:deep(.tm-chat-info-bar),
+
+:deep(.tm-chat-view > .tm-panel-header),
+
+:deep(.tm-chat-panel > .tm-panel-header),
+
+:deep(.tm-main-panel > .tm-panel-header) {
+
+  display: none !important;
+
+}
+
+
+
+:deep(.tm-pinned-strip),
+
+:deep(.tm-pinned-strip--placeholder) {
+
+  display: none !important;
+
+}
+
+
+
+:deep(.tm-messages-wrap) {
+
+  background: #dfe4e8 !important;
+
+  flex: 1 1 auto !important;
+
+  min-height: 0 !important;
+
+  overflow: hidden !important;
+
+}
+
+
+
+:deep(.tm-messages),
+
+:deep(.tm-messages-telegramish) {
+
+  background: transparent !important;
+
+  padding: 12px 10px 108px !important;
+
+  height: 100% !important;
+
+  min-height: 0 !important;
+
+  overflow-y: auto !important;
+
+  overscroll-behavior: contain;
+
+  -webkit-overflow-scrolling: touch;
+
+}
+
+
+
+:deep(.tm-day-separator span),
+
+:deep(.tm-unread-separator__badge) {
+
+  background: rgba(255, 255, 255, 0.7) !important;
+
+  color: #6c7988 !important;
+
+  border-radius: 999px !important;
+
+  box-shadow: 0 8px 18px rgba(65, 86, 115, 0.08);
+
+}
+
+
+
+:deep(.tm-message-shell) {
+
+  margin-bottom: 10px !important;
+
+}
+
+
+
+:deep(.tm-message-avatar) {
+
+  width: 28px !important;
+
+  height: 28px !important;
+
+  border-radius: 999px !important;
+
+  box-shadow: none !important;
+
+  opacity: 0.92;
+
+}
+
+
+
+:deep(.tm-message-card) {
+
+  border: none !important;
+
+  box-shadow: 0 2px 0 rgba(20, 35, 52, 0.04) !important;
+
+  padding: 10px 12px 8px !important;
+
+  border-radius: 18px !important;
+
+  max-width: calc(100vw - 88px) !important;
+
+}
+
+
+
+:deep(.tm-message-card.other) {
+
+  background: rgba(255, 255, 255, 0.92) !important;
+
+  color: #202a33 !important;
+
+}
+
+
+
+:deep(.tm-message-card.mine) {
+
+  background: linear-gradient(180deg, #2d824d 0%, #247342 100%) !important;
+
+  color: #ffffff !important;
+
+}
+
+
+
+:deep(.tm-message-card.mine),
+
+:deep(.tm-message-card.mine .tm-message-text),
+
+:deep(.tm-message-card.mine .tm-message-text *),
+
+:deep(.tm-message-card.mine .tm-message-author),
+
+:deep(.tm-message-card.mine .tm-message-meta),
+
+:deep(.tm-message-card.mine .tm-message-edited-mark),
+
+:deep(.tm-message-card.mine .tm-read-mark) {
+
+  color: #ffffff !important;
+
+}
+
+
+
+:deep(.tm-message-card.other),
+
+:deep(.tm-message-card.other .tm-message-text),
+
+:deep(.tm-message-card.other .tm-message-text *),
+
+:deep(.tm-message-card.other .tm-message-author) {
+
+  color: #202a33 !important;
+
+}
+
+
+
+:deep(.tm-message-card.other .tm-message-meta),
+
+:deep(.tm-message-card.other .tm-message-edited-mark),
+
+:deep(.tm-message-card.other .tm-read-mark) {
+
+  color: #6f7d8d !important;
+
+}
+
+
+
+:deep(.tm-message-author) {
+
+  font-size: 13px !important;
+
+  line-height: 1.15 !important;
+
+  margin-bottom: 6px !important;
+
+}
+
+
+
+:deep(.tm-message-text) {
+
+  font-size: 14px !important;
+
+  line-height: 1.38 !important;
+
+}
+
+
+
+:deep(.tm-message-meta) {
+
+  margin-top: 6px !important;
+
+  font-size: 11px !important;
+
+  line-height: 1.2 !important;
+
+}
+
+
+
+/* normal backgrounds for reply + forwarded */
+
+:deep(.tm-quoted-reply),
+
+:deep(.tm-quoted-reply--telegramish),
+
+:deep(.tm-message-forwarded-quote),
+
+:deep(.tm-reply-preview),
+
+:deep(.tm-edit-preview) {
+
+  background: rgba(255, 255, 255, 0.72) !important;
+
+  border-radius: 14px !important;
+
+  box-shadow: inset 0 0 0 1px rgba(104, 138, 182, 0.08);
+
+}
+
+
+
+:deep(.tm-message-card.mine .tm-quoted-reply),
+
+:deep(.tm-message-card.mine .tm-quoted-reply--telegramish),
+
+:deep(.tm-message-card.mine .tm-message-forwarded-quote) {
+
+  background: rgba(255, 255, 255, 0.12) !important;
+
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+
+}
+
+
+
+:deep(.tm-quoted-reply__text),
+
+:deep(.tm-message-forwarded-quote__text) {
+
+  color: inherit !important;
+
+}
+
+
+
+:deep(.tm-attachments) {
+
+  margin-top: 8px !important;
+
+}
+
+
+
+:deep(.tm-attachment-image),
+
+:deep(.tm-video-preview),
+
+:deep(.tm-video-preview__media),
+
+:deep(.tm-media-grid) {
+
+  border-radius: 16px !important;
+
+  max-width: min(76vw, 420px) !important;
+
+}
+
+
+
+:deep(.tm-video-preview__play),
+
+:deep(.tm-media-grid__play) {
+
+  width: 44px !important;
+
+  height: 44px !important;
+
+  border-radius: 999px !important;
+
+  background: rgba(9, 19, 32, 0.58) !important;
+
+  backdrop-filter: blur(6px);
+
+}
+
+
+
+/* remove outer bubble from media/audio/video messages */
+
+:deep(.tm-message-card:has(.tm-audio-card)),
+
+:deep(.tm-message-card:has(.tm-video-preview)),
+
+:deep(.tm-message-card:has(.tm-media-grid)),
+
+:deep(.tm-message-card:has(.tm-attachment-image)),
+
+:deep(.tm-message-card:has(.tm-attachment-video)),
+
+:deep(.tm-message-card:has(video.tm-video-preview__media)) {
+
+  background: transparent !important;
+
+  box-shadow: none !important;
+
+  border: none !important;
+
+  padding: 0 !important;
+
+}
+
+
+
+:deep(.tm-message-card:has(.tm-audio-card) .tm-message-text),
+
+:deep(.tm-message-card:has(.tm-video-preview) .tm-message-text),
+
+:deep(.tm-message-card:has(.tm-media-grid) .tm-message-text),
+
+:deep(.tm-message-card:has(.tm-attachment-image) .tm-message-text),
+
+:deep(.tm-message-card:has(.tm-attachment-video) .tm-message-text) {
+
+  display: none !important;
+
+}
+
+
+
+:deep(.tm-message-card:has(.tm-audio-card) .tm-attachments),
+
+:deep(.tm-message-card:has(.tm-video-preview) .tm-attachments),
+
+:deep(.tm-message-card:has(.tm-media-grid) .tm-attachments),
+
+:deep(.tm-message-card:has(.tm-attachment-image) .tm-attachments),
+
+:deep(.tm-message-card:has(.tm-attachment-video) .tm-attachments) {
+
+  margin-top: 0 !important;
+
+}
+
+
+
+:deep(.tm-message-card:has(.tm-audio-card) .tm-message-meta),
+
+:deep(.tm-message-card:has(.tm-video-preview) .tm-message-meta),
+
+:deep(.tm-message-card:has(.tm-media-grid) .tm-message-meta),
+
+:deep(.tm-message-card:has(.tm-attachment-image) .tm-message-meta),
+
+:deep(.tm-message-card:has(.tm-attachment-video) .tm-message-meta) {
+
+  margin-top: 6px !important;
+
+  padding: 0 4px !important;
+
+}
+
+
+
+/* smaller audio card */
+
+:deep(.tm-audio-card) {
+
+  width: min(250px, 68vw) !important;
+
+  padding: 12px 14px !important;
+
+  border-radius: 18px !important;
+
+}
+
+
+
+:deep(.tm-audio-card__controls),
+
+:deep(.tm-audio-card__footer),
+
+:deep(.tm-audio-card__divider),
+
+:deep(.tm-audio-card__eyebrow) {
+
+  display: none !important;
+
+}
+
+
+
+:deep(.tm-audio-card__header) {
+
+  gap: 10px !important;
+
+  margin-bottom: 8px !important;
+
+}
+
+
+
+:deep(.tm-audio-card__icon) {
+
+  width: 34px !important;
+
+  height: 34px !important;
+
+  border-radius: 11px !important;
+
+  font-size: 15px !important;
+
+}
+
+
+
+:deep(.tm-audio-card__title) {
+
+  font-size: 14px !important;
+
+  line-height: 1.1 !important;
+
+}
+
+
+
+:deep(.tm-audio-card__subtitle) {
+
+  margin-top: 2px !important;
+
+  font-size: 11px !important;
+
+}
+
+
+
+:deep(.tm-audio-card__main) {
+
+  gap: 10px !important;
+
+}
+
+
+
+:deep(.tm-audio-card__play) {
+
+  width: 38px !important;
+
+  height: 38px !important;
+
+  font-size: 15px !important;
+
+}
+
+
+
+:deep(.tm-audio-card__time) {
+
+  font-size: 12px !important;
+
+  margin-bottom: 4px !important;
+
+}
+
+
+
+:deep(.tm-composer),
+
+:deep(.tm-composer-telegramish) {
+
+  position: sticky;
+
+  bottom: 0;
+
+  z-index: 40;
+
+  background: transparent !important;
+
+  padding: 8px 10px max(8px, env(safe-area-inset-bottom)) !important;
+
+  margin: 0 !important;
+
+  flex: 0 0 auto !important;
+
+  box-sizing: border-box !important;
+
+}
+
+
+
+:deep(.tm-composer-row),
+
+:deep(.tm-composer-row--telegramish) {
+
+  display: flex !important;
+
+  align-items: center !important;
+
+  gap: 10px !important;
+
+  padding: 8px 10px !important;
+
+  border-radius: 24px !important;
+
+  background: rgba(255, 255, 255, 0.92) !important;
+
+  box-shadow:
+
+    0 14px 28px rgba(34, 54, 82, 0.12),
+
+    0 2px 0 rgba(255, 255, 255, 0.6) inset;
+
+  max-width: 100% !important;
+
+  box-sizing: border-box !important;
+
+}
+
+
+
+:deep(.tm-icon-btn) {
+
+  width: 38px !important;
+
+  height: 38px !important;
+
+  min-height: 38px !important;
+
+  border: none !important;
+
+  border-radius: 999px !important;
+
+  background: transparent !important;
+
+  color: #2c7b4a !important;
+
+  box-shadow: none !important;
+
+  font-size: 18px !important;
+
+}
+
+
+
+:deep(.tm-input) {
+
+  height: 40px !important;
+
+  min-height: 40px !important;
+
+  border: none !important;
+
+  border-radius: 999px !important;
+
+  background: transparent !important;
+
+  box-shadow: none !important;
+
+  color: #253647 !important;
+
+  font-size: 16px !important;
+
+  padding: 0 6px !important;
+
+  max-width: 100% !important;
+
+}
+
+
+
+:deep(.tm-input::placeholder) {
+
+  color: #707e8f !important;
+
+}
+
+
+
+:deep(.tm-primary) {
+
+  width: 42px !important;
+
+  height: 42px !important;
+
+  min-height: 42px !important;
+
+  padding: 0 !important;
+
+  border: none !important;
+
+  border-radius: 999px !important;
+
+  background: linear-gradient(180deg, #2d824d 0%, #247342 100%) !important;
+
+  color: #ffffff !important;
+
+  box-shadow: 0 10px 20px rgba(36, 115, 66, 0.28) !important;
+
+  font-size: 18px !important;
+
+  flex: 0 0 auto !important;
+
+}
+
+
+
+:deep(.tm-primary:disabled) {
+
+  opacity: 0.6;
+
+}
+
+
+
+:deep(.tm-context-menu) {
+
+  max-width: calc(100vw - 16px);
+
+}
+
+
+
+:deep(.tm-empty-chat-state),
+
+:deep(.tm-empty-chat-card) {
+
+  background: transparent !important;
+
+  box-shadow: none !important;
+
+}
+
+
+
+
+
+/* mobile viewport fix: keep composer inside visible viewport */
+
+.app-mobile-layout {
+
+  display: flex;
+
+  flex-direction: column;
+
+  overflow: hidden;
+
+}
+
+
+
+:deep(.tm-shell),
+
+:deep(.tm-shell.tm-shell--wide) {
+
+  min-height: 100% !important;
+
+  height: 100% !important;
+
+}
+
+
+
+:deep(.tm-chat-view),
+
+:deep(.tm-chat-panel),
+
+:deep(.tm-main-panel),
+
+:deep(.tm-chat.tm-chat-telegramish) {
+
+  min-height: 0 !important;
+
+  height: auto !important;
+
+  flex: 1 1 auto !important;
+
+}
+
+
+
+:deep(.tm-messages-wrap) {
+
+  flex: 1 1 auto !important;
+
+  min-height: 0 !important;
+
+}
+
+
+
+:deep(.tm-messages),
+
+:deep(.tm-messages-telegramish) {
+
+  min-height: 0 !important;
+
+  height: 100% !important;
+
+}
+
+
+
+:deep(.tm-composer),
+
+:deep(.tm-composer.tm-composer-telegramish) {
+
+  flex: 0 0 auto !important;
+
+}
+
+
+
+
+
+
+/* mobile composer viewport fix */
+
+.app-mobile-layout {
+
+  display: flex;
+
+  flex-direction: column;
+
+  min-height: 100dvh;
+
+  height: 100dvh;
+
+  overflow: hidden;
+
+}
+
+
+
+:deep(.tm-shell),
+
+:deep(.tm-shell.tm-shell--wide) {
+
+  min-height: 100% !important;
+
+  height: 100% !important;
+
+  display: flex !important;
+
+  flex-direction: column !important;
+
+}
+
+
+
+:deep(.tm-chat.tm-chat-telegramish),
+
+:deep(.tm-chat-view),
+
+:deep(.tm-chat-panel),
+
+:deep(.tm-main-panel) {
+
+  flex: 1 1 auto !important;
+
+  min-height: 0 !important;
+
+  height: auto !important;
+
+  display: flex !important;
+
+  flex-direction: column !important;
+
+}
+
+
+
+:deep(.tm-messages-wrap) {
+
+  flex: 1 1 auto !important;
+
+  min-height: 0 !important;
+
+  overflow: hidden !important;
+
+}
+
+
+
+:deep(.tm-messages),
+
+:deep(.tm-messages.tm-messages-telegramish),
+
+:deep(.tm-messages-telegramish) {
+
+  flex: 1 1 auto !important;
+
+  min-height: 0 !important;
+
+  height: auto !important;
+
+  overflow-y: auto !important;
+
+}
+
+
+
+:deep(.tm-composer),
+
+:deep(.tm-composer.tm-composer-telegramish) {
+
+  flex: 0 0 auto !important;
+
+  margin-top: auto !important;
+
+}
+
+
+</style>
+
+
+
+
+<style scoped>
+
+/* mobile-chat-polish-v2 */
+
+
+
+/* smaller text bubbles */
+
+:deep(.tm-message-card) {
+
+  min-height: 0 !important;
+
+  padding: 7px 10px 5px !important;
+
+}
+
+
+
+:deep(.tm-message-text) {
+
+  font-size: 14px !important;
+
+  line-height: 1.36 !important;
+
+}
+
+
+
+/* direct chat typography colors */
+
+:deep(.tm-message-card.mine),
+
+:deep(.tm-message-card.mine .tm-message-text),
+
+:deep(.tm-message-card.mine .tm-message-text *),
+
+:deep(.tm-message-card.mine .tm-message-author),
+
+:deep(.tm-message-card.mine .tm-message-meta),
+
+:deep(.tm-message-card.mine .tm-message-edited-mark),
+
+:deep(.tm-message-card.mine .tm-read-mark) {
+
+  color: #ffffff !important;
+
+}
+
+
+
+:deep(.tm-message-card.other),
+
+:deep(.tm-message-card.other .tm-message-text),
+
+:deep(.tm-message-card.other .tm-message-text *),
+
+:deep(.tm-message-card.other .tm-message-author) {
+
+  color: #202a33 !important;
+
+}
+
+
+
+:deep(.tm-message-card.other .tm-message-meta),
+
+:deep(.tm-message-card.other .tm-message-edited-mark),
+
+:deep(.tm-message-card.other .tm-read-mark) {
+
+  color: #6f7d8d !important;
+
+}
+
+
+
+/* prettier reply preview */
+
+:deep(.tm-quoted-reply),
+
+:deep(.tm-quoted-reply--telegramish) {
+
+  background: rgba(255, 255, 255, 0.7) !important;
+
+  border-radius: 14px !important;
+
+  box-shadow: inset 0 0 0 1px rgba(104, 138, 182, 0.08);
+
+  padding: 8px 10px !important;
+
+}
+
+
+
+:deep(.tm-message-card.mine .tm-quoted-reply),
+
+:deep(.tm-message-card.mine .tm-quoted-reply--telegramish) {
+
+  background: rgba(255, 255, 255, 0.12) !important;
+
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+
+}
+
+
+
+:deep(.tm-quoted-reply__content) {
+
+  gap: 4px !important;
+
+}
+
+
+
+:deep(.tm-quoted-reply__attachment) {
+
+  margin-top: 5px !important;
+
+}
+
+
+
+:deep(.tm-quoted-reply__attachment-image) {
+
+  width: 84px !important;
+
+  max-width: 84px !important;
+
+  max-height: 62px !important;
+
+  object-fit: cover !important;
+
+  border-radius: 10px !important;
+
+}
+
+
+
+:deep(.tm-quoted-reply__attachment-video) {
+
+  width: 96px !important;
+
+  max-width: 96px !important;
+
+  max-height: 64px !important;
+
+  object-fit: cover !important;
+
+  border-radius: 10px !important;
+
+}
+
+
+
+:deep(.tm-quoted-reply__attachment-audio) {
+
+  width: 158px !important;
+
+  max-width: 158px !important;
+
+}
+
+
+
+/* prettier forwarded block */
+
+:deep(.tm-message-forwarded-wrap) {
+
+  display: flex !important;
+
+  flex-direction: column !important;
+
+  gap: 6px !important;
+
+}
+
+
+
+:deep(.tm-message-forwarded) {
+
+  font-size: 13px !important;
+
+  line-height: 1.2 !important;
+
+  font-weight: 700 !important;
+
+  color: #556372 !important;
+
+}
+
+
+
+:deep(.tm-message-forwarded-quote) {
+
+  border-radius: 14px !important;
+
+  padding: 8px 10px !important;
+
+  overflow: hidden !important;
+
+  box-shadow: none !important;
+
+}
+
+
+
+:deep(.tm-message-forwarded-wrap.is-other .tm-message-forwarded-quote) {
+
+  background: #4d5560 !important;
+
+}
+
+
+
+:deep(.tm-message-forwarded-wrap.is-other .tm-message-forwarded-quote__text),
+
+:deep(.tm-message-forwarded-wrap.is-other .tm-message-forwarded__label),
+
+:deep(.tm-message-forwarded-wrap.is-other .tm-message-forwarded__author) {
+
+  color: #ffffff !important;
+
+}
+
+
+
+:deep(.tm-message-forwarded-wrap.is-mine .tm-message-forwarded-quote) {
+
+  background: rgba(255, 255, 255, 0.12) !important;
+
+}
+
+
+
+:deep(.tm-message-forwarded-attachment-image) {
+
+  display: block !important;
+
+  width: 100% !important;
+
+  max-width: min(70vw, 280px) !important;
+
+  border-radius: 14px !important;
+
+  object-fit: cover !important;
+
+}
+
+
+
+:deep(.tm-message-forwarded-attachment-file) {
+
+  display: flex !important;
+
+  flex-direction: column !important;
+
+  gap: 3px !important;
+
+  padding: 9px 11px !important;
+
+  border-radius: 12px !important;
+
+  background: rgba(255, 255, 255, 0.82) !important;
+
+  color: #223344 !important;
+
+}
+
+
+
+:deep(.tm-message-forwarded-wrap.is-other .tm-message-forwarded-attachment-file) {
+
+  background: rgba(255, 255, 255, 0.12) !important;
+
+  color: #ffffff !important;
+
+}
+
+
+
+:deep(.tm-message-forwarded-wrap .tm-audio-card) {
+
+  width: min(236px, 66vw) !important;
+
+}
+
+
+
+:deep(.tm-video-preview--forwarded) {
+
+  max-width: min(70vw, 280px) !important;
+
+  border-radius: 14px !important;
+
+  overflow: hidden !important;
+
+}
+
+
+
+/* remove outer bubble from media/audio/video messages on mobile */
+
+:deep(.tm-message-card:has(.tm-audio-card)),
+
+:deep(.tm-message-card:has(.tm-video-preview)),
+
+:deep(.tm-message-card:has(.tm-media-grid)),
+
+:deep(.tm-message-card:has(.tm-attachment-image)),
+
+:deep(.tm-message-card:has(.tm-attachment-video)),
+
+:deep(.tm-message-card:has(video.tm-video-preview__media)) {
+
+  background: transparent !important;
+
+  box-shadow: none !important;
+
+  border: none !important;
+
+  padding: 0 !important;
+
+}
+
+
+
+:deep(.tm-message-card:has(.tm-audio-card) .tm-message-text),
+
+:deep(.tm-message-card:has(.tm-video-preview) .tm-message-text),
+
+:deep(.tm-message-card:has(.tm-media-grid) .tm-message-text),
+
+:deep(.tm-message-card:has(.tm-attachment-image) .tm-message-text),
+
+:deep(.tm-message-card:has(.tm-attachment-video) .tm-message-text) {
+
+  display: none !important;
+
+}
+
+
+
+:deep(.tm-message-card:has(.tm-audio-card) .tm-attachments),
+
+:deep(.tm-message-card:has(.tm-video-preview) .tm-attachments),
+
+:deep(.tm-message-card:has(.tm-media-grid) .tm-attachments),
+
+:deep(.tm-message-card:has(.tm-attachment-image) .tm-attachments),
+
+:deep(.tm-message-card:has(.tm-attachment-video) .tm-attachments) {
+
+  margin-top: 0 !important;
+
+}
+
+
+
+:deep(.tm-message-card:has(.tm-audio-card) .tm-message-meta),
+
+:deep(.tm-message-card:has(.tm-video-preview) .tm-message-meta),
+
+:deep(.tm-message-card:has(.tm-media-grid) .tm-message-meta),
+
+:deep(.tm-message-card:has(.tm-attachment-image) .tm-message-meta),
+
+:deep(.tm-message-card:has(.tm-attachment-video) .tm-message-meta) {
+
+  margin-top: 6px !important;
+
+  padding: 0 4px !important;
+
+}
+
+
+
+/* keep composer visible inside screen */
+
+:deep(.tm-chat-view),
+
+:deep(.tm-chat-panel),
+
+:deep(.tm-main-panel) {
+
+  min-height: 100vh !important;
+
+  min-height: 100dvh !important;
+
+  height: 100dvh !important;
+
+  overflow: hidden !important;
+
+}
+
+
+
+:deep(.tm-messages-wrap) {
+
+  flex: 1 1 auto !important;
+
+  min-height: 0 !important;
+
+  overflow: hidden !important;
+
+}
+
+
+
+:deep(.tm-messages),
+
+:deep(.tm-messages-telegramish) {
+
+  height: 100% !important;
+
+  min-height: 0 !important;
+
+  overflow-y: auto !important;
+
+  padding-bottom: 104px !important;
+
+}
+
+
+
+:deep(.tm-composer),
+
+:deep(.tm-composer-telegramish) {
+
+  position: sticky !important;
+
+  bottom: 0 !important;
+
+  z-index: 40 !important;
+
+  margin-top: auto !important;
+
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom)) !important;
+
+  background: linear-gradient(180deg, rgba(223, 228, 232, 0) 0%, rgba(223, 228, 232, 0.9) 42%, #dfe4e8 100%) !important;
+
+  box-sizing: border-box !important;
+
+}
+
+
+
+:deep(.tm-composer-row),
+
+:deep(.tm-composer-row--telegramish) {
+
+  margin: 0 !important;
+
+  max-width: 100% !important;
+
+  box-sizing: border-box !important;
+
+}
+
+</style>
+
+<style scoped>
+/* authoritative mobile viewport layout */
+.app-mobile-layout {
+  min-height: 100dvh !important;
+  height: 100dvh !important;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+:deep(.tm-shell),
+:deep(.tm-shell.tm-shell--wide) {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+:deep(.tm-chat-view),
+:deep(.tm-chat-panel),
+:deep(.tm-main-panel) {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+:deep(.tm-chat.tm-chat-telegramish) {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+}
+
+:deep(.tm-messages-wrap) {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+:deep(.tm-composer),
+:deep(.tm-composer.tm-composer-telegramish) {
+  flex: 0 0 auto !important;
+  position: relative !important;
+  inset: auto !important;
+  bottom: auto !important;
+  margin-top: 0 !important;
+}
+</style>

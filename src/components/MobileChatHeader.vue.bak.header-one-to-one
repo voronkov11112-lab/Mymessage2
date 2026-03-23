@@ -1,0 +1,274 @@
+<script setup lang="ts">
+
+type Conversation = {
+
+  id: string;
+
+  type: 'direct' | 'group' | 'channel';
+
+  title: string | null;
+
+};
+
+
+
+const props = defineProps<{
+
+  activeConversation: Conversation | null;
+
+}>();
+
+
+
+const emit = defineEmits<{
+
+  back: [];
+
+  openInfo: [];
+
+}>();
+
+
+
+function titleLabel() {
+
+  if (!props.activeConversation) return 'Чаты';
+
+  return props.activeConversation.title || 'Без названия';
+
+}
+
+
+
+function subtitleLabel() {
+
+  if (!props.activeConversation) return '';
+
+  if (props.activeConversation.type === 'direct') return 'Личный чат';
+
+  if (props.activeConversation.type === 'group') return 'Группа';
+
+  return 'Канал';
+
+}
+
+
+
+function initials(value: string) {
+
+  return value.trim().slice(0, 2).toUpperCase();
+
+}
+
+</script>
+
+
+
+<template>
+
+  <div class="tm-mobile-chat-header">
+
+    <button
+
+      type="button"
+
+      class="tm-mobile-chat-header__back"
+
+      @click="emit('back')"
+
+      aria-label="Назад"
+
+    >
+
+      ←
+
+    </button>
+
+
+
+    <div class="tm-mobile-chat-header__avatar">
+
+      {{ initials(titleLabel()) }}
+
+    </div>
+
+
+
+    <div class="tm-mobile-chat-header__meta">
+
+      <div class="tm-mobile-chat-header__title">{{ titleLabel() }}</div>
+
+      <div class="tm-mobile-chat-header__subtitle">{{ subtitleLabel() }}</div>
+
+    </div>
+
+
+
+    <button
+
+      type="button"
+
+      class="tm-mobile-chat-header__action"
+
+      aria-label="Видео"
+
+    >
+
+      🎥
+
+    </button>
+
+
+
+    <button
+
+      type="button"
+
+      class="tm-mobile-chat-header__action"
+
+      @click="emit('openInfo')"
+
+      aria-label="Информация"
+
+    >
+
+      ⓘ
+
+    </button>
+
+  </div>
+
+</template>
+
+
+
+<style scoped>
+
+.tm-mobile-chat-header {
+
+  position: sticky;
+
+  top: 0;
+
+  z-index: 60;
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 10px;
+
+  margin: 0;
+
+  padding: calc(10px + env(safe-area-inset-top)) 14px 12px;
+
+  background: linear-gradient(180deg, #13283f 0%, #0f2237 100%);
+
+  box-shadow: 0 14px 30px rgba(7, 20, 34, 0.26);
+
+}
+
+
+
+.tm-mobile-chat-header__back,
+
+.tm-mobile-chat-header__action {
+
+  width: 38px;
+
+  height: 38px;
+
+  border: none;
+
+  border-radius: 999px;
+
+  background: rgba(255, 255, 255, 0.12);
+
+  color: #ffffff;
+
+  font-size: 18px;
+
+  font-weight: 700;
+
+  cursor: pointer;
+
+  flex: 0 0 auto;
+
+  display: grid;
+
+  place-items: center;
+
+}
+
+
+
+.tm-mobile-chat-header__avatar {
+
+  width: 42px;
+
+  height: 42px;
+
+  border-radius: 999px;
+
+  background: linear-gradient(180deg, #ffbf4d 0%, #f29d22 100%);
+
+  color: #ffffff;
+
+  font-size: 18px;
+
+  font-weight: 800;
+
+  display: grid;
+
+  place-items: center;
+
+  flex: 0 0 auto;
+
+}
+
+
+
+.tm-mobile-chat-header__meta {
+
+  min-width: 0;
+
+  flex: 1 1 auto;
+
+}
+
+
+
+.tm-mobile-chat-header__title {
+
+  font-size: 16px;
+
+  line-height: 1.05;
+
+  font-weight: 800;
+
+  color: #ffffff;
+
+  white-space: nowrap;
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+}
+
+
+
+.tm-mobile-chat-header__subtitle {
+
+  margin-top: 3px;
+
+  font-size: 12px;
+
+  line-height: 1.2;
+
+  color: rgba(255, 255, 255, 0.82);
+
+}
+
+</style>
+
